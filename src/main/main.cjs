@@ -25,6 +25,7 @@ const { Cloud, ACTIONS: cloudActions } = require('./cloud.cjs');
 const { Updates, ACTIONS: updateActions, installationMode } = require('./updates.cjs');
 const { handleSquirrel, APP_ID } = require('./squirrel.cjs');
 const { loadClientConfig } = require('./cloud-config.cjs');
+const { TemporaryEscape, copyLastDictationItem, usesEscape } = require('./dictation-controls.cjs');
 const {
   legacyAccelerator,
   shouldSuspendForFocusedWindow,
@@ -96,6 +97,18 @@ const allowedActions = new Set([
   'permissions.soundSettings',
   'microphone.test',
 ]);
+const escapeKey = new TemporaryEscape({
+  shortcuts: globalShortcut,
+  isDown: (key) => native.isShortcutDown(key),
+  cancel: () => void engine?.cancel().catch(() => {}),
+});
+function syncEscape() {
+  escapeKey.sync({
+    state: engine?.state,
+    shortcut: engine?.settings.HotkeyAccelerator,
+    disabled: diagnostic || quitting || inserting || (capturingShortcut && hub?.isFocused()),
+  });
+}
 function refreshData() {
   dataCache = {
     settings: engine.settings,
@@ -161,6 +174,10 @@ function showOverlay() {
   }
 }
 function toggle() {
+  if (usesEscape(engine?.settings.HotkeyAccelerator) && engine?.busy()) {
+    void engine.cancel().catch(() => {});
+    return;
+  }
   if (workspace?.busy || updater?.installing) return;
   const now = Date.now();
   if (now - lastToggle < 450) return;
@@ -178,6 +195,7 @@ function toggle() {
     .catch(() => engine.set('error', 'Impossible de démarrer le microphone.'));
 }
 function registerShortcut() {
+  escapeKey.release();
   globalShortcut.unregisterAll();
   clearInterval(poll);
   poll = null;
@@ -193,8 +211,10 @@ function registerShortcut() {
     workspace?.busy ||
     (capturingShortcut && hub?.isFocused()) ||
     shouldSuspendForFocusedWindow(accelerator, appWindowFocused)
-  )
+  ) {
+    syncEscape();
     return true;
+  }
   keyboardWarning = '';
   const vk = virtualKeyOf(accelerator);
   if (vk != null) {
@@ -208,6 +228,7 @@ function registerShortcut() {
     if (!globalShortcut.register(accelerator, toggle))
       keyboardWarning = 'Le raccourci est utilisé par une autre application.';
   }
+  syncEscape();
   return !keyboardWarning;
 }
 function openHub() {
@@ -226,6 +247,7 @@ function menu() {
       },
     },
     { type: 'separator' },
+    lastDictationMenuItem(),
     {
       label: engine.paused ? 'Reprendre la dictée' : 'Mettre la dictée en pause',
       enabled: !engine.busy(),
@@ -246,6 +268,39 @@ function menu() {
     { type: 'separator' },
     { label: 'Quitter Voxen', click: () => app.quit() },
   ]).popup({ window: overlay });
+}
+function lastDictationMenuItem() {
+  return copyLastDictationItem({
+    getText: () => engine?.lastFinalText || '',
+    writeText: (text) => clipboard.writeText(text),
+    disabled: diagnostic,
+  });
+}
+function refreshTrayMenu() {
+  if (!tray || tray.isDestroyed()) return;
+  tray.setContextMenu(
+    Menu.buildFromTemplate([
+      { label: 'Ouvrir Voxen', click: openHub },
+      {
+        label: 'Paramètres',
+        click: () => {
+          openHub();
+          hub.webContents.send('voxen:navigate', 'settings');
+        },
+      },
+      {
+        label: 'Mises à jour',
+        click: () => {
+          openHub();
+          hub.webContents.send('voxen:navigate', 'updates');
+        },
+      },
+      { type: 'separator' },
+      lastDictationMenuItem(),
+      { type: 'separator' },
+      { label: 'Quitter', click: () => app.quit() },
+    ]),
+  );
 }
 function ownSender(event) {
   return [hub?.webContents.id, overlay?.webContents.id, notesWindow?.webContents.id].includes(
@@ -567,7 +622,11 @@ async function createWindows() {
     )
       shell.beep();
   });
-  engine.on('change', broadcast);
+  engine.on('change', () => {
+    syncEscape();
+    refreshTrayMenu();
+    broadcast();
+  });
   engine.on('data', () => {
     cloud?.markDirty();
     refreshData();
@@ -698,12 +757,50 @@ async function uiSelfTest() {
   hub.setSize(1240, 850);
   await wait(100);
   await shot(hub, 'sidebar-dashboard');
+  result.sidebarUpdateHiddenWithoutRelease = await hub.webContents.executeJavaScript(
+    "!document.querySelector('[data-sidebar-update]')",
+  );
+  if (!result.sidebarUpdateHiddenWithoutRelease)
+    throw new Error('Une mise à jour est annoncée sans nouvelle version confirmée');
+  const updateFixture = {
+    mode: updater.mode,
+    state: updater.state,
+    availableVersion: updater.availableVersion,
+    downloadPercent: updater.downloadPercent,
+    transferredBytes: updater.transferredBytes,
+    totalBytes: updater.totalBytes,
+    bytesPerSecond: updater.bytesPerSecond,
+  };
+  updater.mode = 'installed';
+  for (const state of ['idle', 'checking', 'error', 'downloading']) {
+    updater.state = state;
+    updater.availableVersion = null;
+    broadcast();
+    await wait(50);
+    if (
+      !(await hub.webContents.executeJavaScript("!document.querySelector('[data-sidebar-update]')"))
+    )
+      throw new Error('Annonce de mise à jour sans version confirmée : ' + state);
+  }
+  updater.state = 'downloading';
+  updater.availableVersion = '999.0.0';
+  updater.downloadPercent = 37.5;
+  updater.transferredBytes = 39321600;
+  updater.totalBytes = 104857600;
+  updater.bytesPerSecond = 2097152;
+  broadcast();
+  await wait(100);
   result.sidebarUpdatePosition = await hub.webContents.executeJavaScript(
     `(()=>{const card=document.querySelector('[aria-label="Découvrir Voxen"]'),button=document.querySelector('[data-sidebar-update]');if(!card||!button)return false;return card.nextElementSibling===button&&button.getBoundingClientRect().top>=card.getBoundingClientRect().bottom&&button.getBoundingClientRect().bottom<innerHeight})()`,
   );
-  if (!result.sidebarUpdatePosition) throw new Error('Bouton de mise à jour absent sous le guide');
+  if (!result.sidebarUpdatePosition) throw new Error('Bloc de mise à jour absent sous le guide');
+  result.downloadProgressMatchesBytes = await hub.webContents.executeJavaScript(
+    `(()=>{const e=document.querySelector('[data-sidebar-update] [role=progressbar]');return e?.getAttribute('aria-valuenow')==='37.5'&&e.textContent.trim()==='37%'&&[...e.querySelectorAll('circle')].some(c=>c.getAttribute('stroke-dashoffset')==='62.5')})()`,
+  );
+  if (!result.downloadProgressMatchesBytes) throw new Error('Progression circulaire incorrecte');
+  await shot(hub, 'sidebar-update-downloading');
   await hub.webContents.executeJavaScript(
-    "document.querySelector('[data-sidebar-update]').click()",
+    "document.querySelector('[data-sidebar-update-open]').click()",
   );
   await wait(350);
   result.sidebarUpdateOpensSystem = await hub.webContents.executeJavaScript(
@@ -711,6 +808,25 @@ async function uiSelfTest() {
   );
   if (!result.sidebarUpdateOpensSystem)
     throw new Error('Bouton de mise à jour ne rejoint pas le suivi');
+  await shot(hub, 'updates-download-progress');
+  updater.downloadPercent = 100;
+  broadcast();
+  await wait(80);
+  result.downloadVerificationSeparate = await hub.webContents.executeJavaScript(
+    `document.querySelector('[data-updates-panel]').textContent.includes('Vérification de la mise à jour')&&!document.querySelector('[data-updates-panel]').textContent.includes('Redémarrer et installer')`,
+  );
+  if (!result.downloadVerificationSeparate)
+    throw new Error('Installation proposée avant vérification');
+  updater.state = 'ready';
+  broadcast();
+  await wait(80);
+  result.readyToInstall = await hub.webContents.executeJavaScript(
+    `document.querySelector('[data-sidebar-update-open]').textContent.trim()==='Mettre à jour'&&document.querySelector('[data-updates-panel]').textContent.includes('Redémarrer et installer')`,
+  );
+  if (!result.readyToInstall) throw new Error('Installation non proposée après vérification');
+  await shot(hub, 'updates-ready-to-install');
+  Object.assign(updater, updateFixture);
+  broadcast();
   await hub.webContents.executeJavaScript(
     'document.querySelector(\'[aria-label="Fermer les paramètres"]\').click()',
   );
@@ -1256,7 +1372,10 @@ if (squirrelHandled) {
         },
       });
       updater = new Updates({
-        adapter: autoUpdater,
+        adapter: new (require('./update-download.cjs').DownloadAdapter)({
+          native: autoUpdater,
+          version: app.getVersion(),
+        }),
         store,
         version: app.getVersion(),
         mode: diagnostic ? 'development' : installationMode({ packaged: app.isPackaged }),
@@ -1304,26 +1423,7 @@ if (squirrelHandled) {
       const icon = nativeImage.createFromPath(path.resolve(__dirname, '../../assets/icon.png'));
       tray = new Tray(icon);
       tray.setToolTip('Voxen · Dictée');
-      tray.setContextMenu(
-        Menu.buildFromTemplate([
-          { label: 'Ouvrir Voxen', click: openHub },
-          {
-            label: 'Paramètres',
-            click: () => {
-              openHub();
-              hub.webContents.send('voxen:navigate', 'settings');
-            },
-          },
-          {
-            label: 'Mises à jour',
-            click: () => {
-              openHub();
-              hub.webContents.send('voxen:navigate', 'updates');
-            },
-          },
-          { label: 'Quitter', click: () => app.quit() },
-        ]),
-      );
+      refreshTrayMenu();
       tray.on('double-click', openHub);
       registerShortcut();
       if (!args.includes('--tray')) hub.show();
@@ -1358,6 +1458,7 @@ if (squirrelHandled) {
     cloud?.close();
     updater?.close();
     workspace?.close();
+    escapeKey.release();
     globalShortcut.unregisterAll();
     clearInterval(poll);
     void engine?.close();

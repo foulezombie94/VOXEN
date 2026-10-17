@@ -37,6 +37,27 @@
   background: #f5f4f0;
   border-radius: 12px;
   padding: 20px;
+  border: 1px solid #e8e5da;
+  background: radial-gradient(ellipse at 100% 0%, #eef0e3 0%, transparent 70%), #f7f6f0;
+}
+.transfer {
+  display: flex;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 11px 13px;
+  border: 1px solid #e3e6d8;
+  border-radius: 9px;
+  background: #ffffffa8;
+  color: #778067;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+.verifying {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: #65804e;
 }
 .summary {
   display: flex;

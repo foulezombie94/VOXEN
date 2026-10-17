@@ -9,6 +9,13 @@ const { Updates, installationMode, FEED, RELEASES } = require('../src/main/updat
 const { handleSquirrel } = require('../src/main/squirrel.cjs');
 const { readClientConfig, loadClientConfig } = require('../src/main/cloud-config.cjs');
 const MINUTE = 60_000;
+const { createHash } = require('node:crypto');
+const {
+  DownloadAdapter,
+  parseManifest,
+  newerVersion,
+  officialFetch,
+} = require('../src/main/update-download.cjs');
 
 function fixture(options = {}) {
   const values = new Map(options.saved || []);
@@ -31,10 +38,17 @@ function fixture(options = {}) {
     online = true;
   const updates = new Updates({
     adapter,
-    store: { get: (key) => values.get(key), set: (key, value) => values.set(key, value) },
-    version: '0.2.0',
+    store: {
+      get: (key) => values.get(key),
+      set: (key, value) => {
+        if (options.historyWriteError && key === 'updates.installHistory')
+          throw new Error('private storage fixture');
+        values.set(key, value);
+      },
+    },
+    version: options.version || '0.2.0',
     mode: options.mode || 'installed',
-    clock: () => Date.parse('2026-10-17T12:00:00Z'),
+    clock: options.clock || (() => Date.parse('2026-10-17T12:00:00Z')),
     random: options.random || (() => 0.5),
     isBusy: () => busy,
     isOnline: () => online,
@@ -500,4 +514,493 @@ test('invalid external URLs or non-publishable keys fall back safely without acc
   fs.unlinkSync(f.bundled);
   assert.deepEqual(loadClientConfig(f.dir, f.bundled), {});
   assert.equal(readClientConfig(path.join(f.dir, 'missing.json')), null);
+});
+
+function downloadFixture(t, options = {}) {
+  const native = new EventEmitter();
+  const calls = { check: 0, install: 0, urls: [] };
+  native.setFeedURL = ({ url }) => {
+    calls.feed = url;
+  };
+  native.checkForUpdates = () => {
+    calls.check++;
+  };
+  native.quitAndInstall = () => {
+    calls.install++;
+  };
+  const data = Buffer.from('fixture-package-content');
+  const name = 'voxen_desktop-0.3.5-full.nupkg';
+  const manifest = `${createHash('sha1').update(data).digest('hex')} ${name} ${data.length}\n`;
+  const fetchImpl = async (url, config) => {
+    calls.urls.push(url);
+    if (url.endsWith('/RELEASES')) return new Response(options.manifest || manifest);
+    if (options.packageResponse) return options.packageResponse(config);
+    return new Response(data, { headers: { 'content-length': String(data.length) } });
+  };
+  const adapter = new DownloadAdapter({ native, version: options.version || '0.3.4', fetchImpl });
+  const errors = [],
+    progress = [],
+    releases = [];
+  adapter.on('error', (error) => errors.push(error.message));
+  adapter.on('download-progress', (value) => progress.push(value));
+  adapter.on('release-info', (value) => releases.push(value));
+  adapter.setFeedURL({ url: FEED });
+  t.after(() => adapter.close());
+  return { native, adapter, calls, data, name, errors, progress, releases };
+}
+
+test('strict full-package manifest parsing and stable version comparisons reject untrusted packages', () => {
+  const valid = `${'a'.repeat(40)} voxen_desktop-0.3.5-full.nupkg 1024`;
+  assert.equal(parseManifest(valid).version, '0.3.5');
+  for (const bad of [
+    valid + '\n' + valid,
+    valid.replace('voxen_desktop', '../voxen_desktop'),
+    valid.replace('full', 'delta'),
+    valid.replace('1024', '0'),
+    valid.replace('1024', '9007199254740992'),
+    valid.replace('voxen_desktop', 'other'),
+  ])
+    assert.throws(() => parseManifest(bad));
+  assert(newerVersion('0.3.5', '0.3.4'));
+  assert(newerVersion('0.10.0', '0.9.9'));
+  assert(!newerVersion('0.3.4', '0.3.4'));
+  assert(!newerVersion('0.3.3', '0.3.4'));
+  assert(!newerVersion('0.3.5-evil', '0.3.4'));
+});
+
+test('loopback feed streams one pinned official package and reports actual byte progress', async (t) => {
+  const f = downloadFixture(t);
+  await f.adapter.checkForUpdates();
+  assert.equal(f.calls.check, 1);
+  assert.deepEqual(f.releases, [{ version: '0.3.5', totalBytes: f.data.length }]);
+  assert.match(f.calls.feed, /^http:\/\/127\.0\.0\.1:\d+\/[a-f0-9]{48}$/);
+  const manifest = await fetch(f.calls.feed + '/RELEASES?id=voxen&localVersion=0.3.4&arch=amd64');
+  assert.equal(manifest.status, 200);
+  const downloaded = Buffer.from(await (await fetch(f.calls.feed + '/' + f.name)).arrayBuffer());
+  assert.deepEqual(downloaded, f.data);
+  assert.equal(f.progress.at(-1).transferredBytes, f.data.length);
+  assert.equal(f.progress.at(-1).downloadPercent, 100);
+  assert.equal(f.calls.urls.filter((url) => url.endsWith('.nupkg')).length, 1);
+  assert(
+    f.calls.urls.includes(
+      `https://github.com/foulezombie94/VOXEN/releases/download/v0.3.5/${f.name}`,
+    ),
+  );
+  assert.equal(f.calls.install, 0);
+});
+
+test('no newer release never starts Squirrel or advertises availability', async (t) => {
+  const f = downloadFixture(t, { version: '0.3.5' });
+  let notAvailable = 0;
+  f.adapter.on('update-not-available', () => {
+    notAvailable++;
+  });
+  await f.adapter.checkForUpdates();
+  assert.equal(notAvailable, 1);
+  assert.equal(f.calls.check, 0);
+  assert.equal(f.releases.length, 0);
+  assert.equal(f.adapter.server, undefined);
+});
+
+test('local updater only serves the exact manifest and package to GET requests', async (t) => {
+  const f = downloadFixture(t);
+  await f.adapter.checkForUpdates();
+  for (const suffix of [
+    '/anything',
+    '/' + f.name + '?url=https://example.invalid',
+    '/RELEASES?url=evil',
+    '/%2e%2e/RELEASES',
+    '/RELEASES/extra',
+  ]) {
+    assert.equal((await fetch(f.calls.feed + suffix)).status, 404, suffix);
+  }
+  assert.equal((await fetch(f.calls.feed + '/RELEASES', { method: 'POST' })).status, 404);
+  const address = new URL(f.calls.feed);
+  assert.equal((await fetch(address.origin + '/wrong/RELEASES')).status, 404);
+  assert.equal(f.calls.urls.length, 1);
+  assert.throws(() => f.adapter.setFeedURL({ url: 'http://untrusted' }));
+});
+
+test('package truncation, length mismatch and checksum mismatch fail safely without 100 percent', async (t) => {
+  for (const mode of ['truncated', 'length', 'hash']) {
+    const f = downloadFixture(t, {
+      packageResponse: () =>
+        new Response(mode === 'hash' ? 'X'.repeat(23) : 'short', {
+          headers: mode === 'length' ? { 'content-length': '999' } : {},
+        }),
+    });
+    await f.adapter.checkForUpdates();
+    try {
+      await (await fetch(f.calls.feed + '/' + f.name)).arrayBuffer();
+    } catch {
+      /* aborted transport */
+    }
+    await new Promise((resolve) => setImmediate(resolve));
+    assert(f.errors.length, mode);
+    assert(!f.progress.some((item) => item.downloadPercent === 100), mode);
+    assert(
+      f.errors.every((value) => !value.includes('http') && !value.includes('fixture')),
+      mode,
+    );
+  }
+});
+
+test('closing aborts an active download and removes only owned native listeners', async (t) => {
+  let aborted = false;
+  const f = downloadFixture(t, {
+    packageResponse: ({ signal }) =>
+      new Response(
+        new ReadableStream({
+          start(controller) {
+            controller.enqueue(Buffer.from('first'));
+            signal.addEventListener(
+              'abort',
+              () => {
+                aborted = true;
+                controller.error(new Error('fixture aborted'));
+              },
+              { once: true },
+            );
+          },
+        }),
+      ),
+  });
+  const external = () => {};
+  f.native.on('error', external);
+  await f.adapter.checkForUpdates();
+  const response = await fetch(f.calls.feed + '/' + f.name);
+  const reader = response.body.getReader();
+  await reader.read();
+  f.adapter.close();
+  try {
+    await reader.read();
+  } catch {
+    /* cancelled */
+  }
+  await new Promise((resolve) => setImmediate(resolve));
+  assert(aborted);
+  assert.equal(f.errors.length, 0);
+  assert.deepEqual(f.native.listeners('error'), [external]);
+  assert.equal(f.adapter.server, null);
+});
+
+test('client cancellation aborts the upstream transfer and never reports completion', async (t) => {
+  let aborted = false;
+  const f = downloadFixture(t, {
+    packageResponse: ({ signal }) =>
+      new Response(
+        new ReadableStream({
+          start(controller) {
+            controller.enqueue(Buffer.from('first'));
+            signal.addEventListener(
+              'abort',
+              () => {
+                aborted = true;
+                controller.error(new Error('fixture aborted'));
+              },
+              { once: true },
+            );
+          },
+        }),
+      ),
+  });
+  await f.adapter.checkForUpdates();
+  const response = await fetch(f.calls.feed + '/' + f.name);
+  await response.body.cancel();
+  for (let i = 0; i < 20 && !aborted; i++) await new Promise((resolve) => setTimeout(resolve, 10));
+  assert(aborted);
+  assert(f.errors.length);
+  assert(!f.progress.some((item) => item.downloadPercent === 100));
+});
+
+test('official transport refuses unsafe redirect targets before requesting them', async () => {
+  const first = FEED + '/RELEASES';
+  for (const target of [
+    'http://github.com/foulezombie94/VOXEN/releases/x',
+    'https://example.invalid/secret',
+    'https://github.com/other/repo/releases/x',
+    'file:///private',
+    'https://user:password@release-assets.githubusercontent.com/file',
+  ]) {
+    let calls = 0;
+    await assert.rejects(
+      officialFetch(first, new AbortController().signal, async () => {
+        calls++;
+        return new Response(null, { status: 302, headers: { location: target } });
+      }),
+    );
+    assert.equal(calls, 1);
+  }
+});
+
+test('update status carries verified version and measured progress without exposing native metadata', () => {
+  const f = fixture();
+  assert.equal(f.updates.status().downloadPercent, null);
+  f.adapter.emit('release-info', { version: '0.3.0', totalBytes: 100 });
+  f.adapter.emit('update-available');
+  f.adapter.emit('download-progress', {
+    transferredBytes: 42,
+    totalBytes: 100,
+    bytesPerSecond: 21,
+  });
+  assert.equal(f.updates.status().availableVersion, '0.3.0');
+  assert.equal(f.updates.status().downloadPercent, 42);
+  assert.equal(f.updates.status().bytesPerSecond, 21);
+  f.adapter.emit('download-progress', { transferredBytes: 101, totalBytes: 100 });
+  assert.equal(f.updates.status().downloadPercent, 42);
+  f.adapter.emit('update-not-available');
+  assert.equal(f.updates.status().availableVersion, null);
+  assert.equal(f.updates.status().downloadPercent, null);
+  f.close();
+});
+
+test('intermediate percentage advances from streamed bytes and stops before verification', async (t) => {
+  let stream;
+  const f = downloadFixture(t, {
+    packageResponse: () =>
+      new Response(
+        new ReadableStream({
+          start(controller) {
+            stream = controller;
+          },
+        }),
+      ),
+  });
+  await f.adapter.checkForUpdates();
+  const firstProgress = new Promise((resolve) =>
+    f.adapter.on('download-progress', (value) => {
+      if (value.transferredBytes === 5) resolve(value);
+    }),
+  );
+  const request = fetch(f.calls.feed + '/' + f.name);
+  while (!stream) await new Promise((resolve) => setImmediate(resolve));
+  stream.enqueue(f.data.subarray(0, 5));
+  const measured = await firstProgress;
+  assert.equal(measured.downloadPercent, (5 / f.data.length) * 100);
+  assert(!f.progress.some((value) => value.downloadPercent === 100));
+  stream.enqueue(f.data.subarray(5));
+  stream.close();
+  await (await request).arrayBuffer();
+  assert.equal(f.progress.at(-1).downloadPercent, 100);
+  f.native.emit('update-downloaded', {}, '', 'Non-version release title');
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(f.adapter.server, null);
+  assert.equal(f.adapter.running, false);
+});
+
+test('verified manifest version survives an arbitrary native release title while staging completes', () => {
+  const f = fixture();
+  f.adapter.emit('release-info', { version: '0.3.0', totalBytes: 100 });
+  f.adapter.emit('update-available');
+  f.adapter.emit('checking-for-update');
+  assert.equal(f.updates.status().state, 'downloading');
+  f.ready('An arbitrary title');
+  assert.equal(f.updates.status().availableVersion, '0.3.0');
+  assert.equal(f.updates.status().state, 'ready');
+  f.close();
+});
+
+const INSTALL_KEY = 'updates.installHistory';
+const DAY = 24 * 60 * MINUTE;
+const attemptNow = Date.parse('2026-10-17T12:00:00Z');
+const historyValue = (changes = {}) =>
+  JSON.stringify({ failures: [], pending: null, autoRetryAt: null, ...changes });
+
+test('explicit install records one bounded target only after draft saving and verifies success next startup', async () => {
+  const f = fixture();
+  f.ready('0.3.0');
+  await f.updates.install();
+  const history = JSON.parse(f.values.get(INSTALL_KEY));
+  assert.deepEqual(history.pending, {
+    targetVersion: '0.3.0',
+    fromVersion: '0.2.0',
+    attemptedAt: attemptNow,
+  });
+  f.close();
+  for (const version of ['0.3.0', '0.4.0']) {
+    const reopened = fixture({ saved: [...f.values], version });
+    assert.deepEqual(JSON.parse(reopened.values.get(INSTALL_KEY)), JSON.parse(historyValue()));
+    assert.equal(reopened.updates.status().autoRetryAt, null);
+    reopened.close();
+  }
+  const blocked = fixture({ beforeInstall: async () => false });
+  blocked.ready();
+  await assert.rejects(blocked.updates.install());
+  assert.equal(blocked.values.get(INSTALL_KEY), undefined);
+  blocked.close();
+});
+
+test('returning to old version records one failed attempt once and three recent failures pause only automatic checks', async () => {
+  let saved = [];
+  for (let count = 1; count <= 3; count++) {
+    const f = fixture({ saved });
+    f.ready();
+    await f.updates.install();
+    saved = [...f.values];
+    f.close();
+    const reopened = fixture({ saved });
+    const history = JSON.parse(reopened.values.get(INSTALL_KEY));
+    assert.equal(history.failures.length, count);
+    assert.equal(history.pending, null);
+    saved = [...reopened.values];
+    if (count === 3) {
+      assert.equal(reopened.updates.status().autoRetryAt, new Date(attemptNow + DAY).toISOString());
+      assert.equal(reopened.updates.status().enabled, true);
+      reopened.updates.start();
+      assert.equal(reopened.delay(), DAY);
+      assert.deepEqual(await reopened.updates.check(false), { ok: false });
+      assert.equal(reopened.calls.check, 0);
+      assert.deepEqual(await reopened.updates.check(true), { ok: true });
+      assert.equal(reopened.calls.check, 1);
+    }
+    reopened.close();
+    const noExtraAttempt = fixture({ saved });
+    assert.equal(noExtraAttempt.updates.installHistory.failures.length, count);
+    noExtraAttempt.close();
+  }
+});
+
+test('expired retry pause resumes automatic checks and failure timestamps outside24h do not trigger a pause', async () => {
+  let now = attemptNow;
+  const f = fixture({
+    clock: () => now,
+    saved: [[INSTALL_KEY, historyValue({ failures: [now, now, now], autoRetryAt: now + DAY })]],
+  });
+  f.updates.start();
+  assert.equal(f.delay(), DAY);
+  now += DAY + 1;
+  assert.equal(f.updates.status().autoRetryAt, null);
+  assert.deepEqual(await f.updates.check(false), { ok: true });
+  assert.equal(f.calls.check, 1);
+  f.close();
+  const stale = fixture({
+    saved: [
+      [
+        INSTALL_KEY,
+        historyValue({
+          failures: [attemptNow - DAY - 1, attemptNow - DAY - 1],
+          pending: {
+            fromVersion: '0.2.0',
+            targetVersion: '0.3.0',
+            attemptedAt: attemptNow - DAY - 1,
+          },
+        }),
+      ],
+    ],
+  });
+  assert.equal(stale.updates.installHistory.failures.length, 0);
+  assert.equal(stale.updates.status().autoRetryAt, null);
+  stale.close();
+});
+
+test('native synchronous and asynchronous install failures count once without leaving a pending retry', async () => {
+  for (const asynchronous of [false, true]) {
+    let saved = [];
+    for (let count = 1; count <= 3; count++) {
+      const f = fixture({
+        saved,
+        ...(!asynchronous && { installError: new Error('private fixture') }),
+      });
+      f.ready();
+      if (asynchronous) {
+        await f.updates.install();
+        f.adapter.emit('error', new Error('private fixture'));
+      } else await assert.rejects(f.updates.install());
+      const history = JSON.parse(f.values.get(INSTALL_KEY));
+      assert.equal(history.failures.length, count);
+      assert.equal(history.pending, null);
+      assert.equal(f.updates.status().autoRetryAt !== null, count === 3);
+      saved = [...f.values];
+      f.close();
+    }
+  }
+});
+
+test('install history rejects malformed or oversized JSON and caps valid future timestamps to24h', () => {
+  const invalid = [
+    'not json',
+    'null',
+    '[]',
+    'x'.repeat(4097),
+    historyValue({ failures: [1, 2, 3, 4] }),
+    historyValue({ failures: ['secret'] }),
+    historyValue({
+      pending: { fromVersion: '0.2.0', targetVersion: 'https://secret', attemptedAt: attemptNow },
+    }),
+    historyValue({
+      pending: { fromVersion: '0.3.0', targetVersion: '0.2.0', attemptedAt: attemptNow },
+    }),
+    historyValue({ autoRetryAt: 'forever' }),
+  ];
+  for (const value of invalid) {
+    const f = fixture({ saved: [[INSTALL_KEY, value]] });
+    assert.deepEqual(f.updates.installHistory, JSON.parse(historyValue()));
+    assert.equal(f.updates.status().autoRetryAt, null);
+    f.close();
+  }
+  const f = fixture({
+    saved: [
+      [
+        INSTALL_KEY,
+        historyValue({
+          failures: [Number.MAX_SAFE_INTEGER],
+          autoRetryAt: Number.MAX_SAFE_INTEGER,
+          pending: {
+            fromVersion: '0.2.0',
+            targetVersion: '0.3.0',
+            attemptedAt: Number.MAX_SAFE_INTEGER,
+          },
+        }),
+      ],
+    ],
+  });
+  assert.deepEqual(f.updates.installHistory.failures, [attemptNow, attemptNow]);
+  assert.equal(f.updates.status().autoRetryAt, new Date(attemptNow + DAY).toISOString());
+  assert.equal(f.updates.installHistory.pending, null);
+  assert(!JSON.stringify(f.updates.status()).includes('secret'));
+  f.close();
+});
+
+test('development and portable modes do not reconcile or persist installation tracking', () => {
+  const value = historyValue({
+    pending: { fromVersion: '0.2.0', targetVersion: '0.3.0', attemptedAt: attemptNow },
+  });
+  for (const mode of ['development', 'portable']) {
+    const f = fixture({ mode, saved: [[INSTALL_KEY, value]] });
+    assert.equal(f.values.get(INSTALL_KEY), value);
+    assert.equal(f.updates.status().autoRetryAt, null);
+    f.close();
+  }
+});
+
+test('future retry timestamp is persisted once so restarting cannot prolong the24h cap', () => {
+  const f = fixture({
+    saved: [[INSTALL_KEY, historyValue({ autoRetryAt: Number.MAX_SAFE_INTEGER })]],
+  });
+  const expected = new Date(attemptNow + DAY).toISOString();
+  assert.equal(f.updates.status().autoRetryAt, expected);
+  const reopened = fixture({ saved: [...f.values], clock: () => attemptNow + MINUTE });
+  assert.equal(reopened.updates.status().autoRetryAt, expected);
+  f.close();
+  reopened.close();
+});
+
+test('failure to persist an explicit attempt prevents the native restart without exposing storage errors', async () => {
+  const f = fixture({ historyWriteError: true });
+  f.ready();
+  await assert.rejects(
+    f.updates.install(),
+    (error) => /Redémarrage reporté/.test(error.message) && !error.message.includes('private'),
+  );
+  assert.equal(f.calls.install, 0);
+  assert.equal(f.updates.installHistory.pending, null);
+  assert.equal(f.updates.installHistory.failures.length, 0);
+  assert.equal(f.updates.status().busy, false);
+  f.close();
+  const pending = historyValue({
+    pending: { fromVersion: '0.2.0', targetVersion: '0.3.0', attemptedAt: attemptNow },
+  });
+  const reopened = fixture({ historyWriteError: true, saved: [[INSTALL_KEY, pending]] });
+  assert.equal(reopened.updates.installHistory.failures.length, 1);
+  reopened.close();
 });

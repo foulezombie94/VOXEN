@@ -1,87 +1,90 @@
-import React, { useEffect, useRef, useState } from 'react';
-import { ArrowUpRight, Download, LoaderCircle, RefreshCw } from 'lucide-react';
+import React, { useState } from 'react';
+import { ArrowUpRight, RotateCcw, Sparkles, TriangleAlert } from 'lucide-react';
+import CircularProgress from './CircularProgress';
 import s from './SidebarUpdate.module.scss';
 
-export default function SidebarUpdate({ updates = {}, collapsed = false, onOpen, run }) {
+export default function SidebarUpdate({ updates = {}, collapsed = false, onOpen }) {
   const [pending, setPending] = useState(false);
-  const [failed, setFailed] = useState(false);
-  const lock = useRef(false);
   const state = updates.state || 'unsupported';
-  const ready = Boolean(updates.supported && state === 'ready');
-  const checking = state === 'checking';
-  const downloading = state === 'downloading';
-  const disabled = Boolean(pending || checking || downloading || updates.busy);
-  const version = String(updates.currentVersion || '').slice(0, 80);
-  const available = String(updates.availableVersion || '').slice(0, 80);
-
-  useEffect(() => setFailed(false), [state]);
-
-  const label = checking
-    ? 'Vérification en cours'
-    : downloading
-      ? 'Téléchargement en cours'
-      : ready
-        ? 'Installer la mise à jour'
-        : 'Mettre à jour';
-  const caption = failed
-    ? 'Réessayez dans les paramètres'
-    : ready
-      ? available
-        ? `Version ${available} disponible`
-        : 'Prête à redémarrer'
-      : checking
-        ? 'Recherche d’une nouvelle version'
-        : downloading
-          ? 'Préparation en arrière-plan'
-          : state === 'error'
-            ? 'Réessayer la vérification'
-            : version
-              ? `Canal stable · v${version.replace(/^v/, '')}`
-              : 'Canal stable';
-  const Icon = checking || downloading || pending ? LoaderCircle : ready ? Download : RefreshCw;
-
+  const version = String(updates.availableVersion || '').slice(0, 80);
+  const visible =
+    updates.supported && version && ['available', 'downloading', 'ready', 'error'].includes(state);
+  if (!visible) return null;
+  const ready = state === 'ready';
+  const error = state === 'error';
+  const percent = typeof updates.downloadPercent === 'number' ? updates.downloadPercent : null;
+  const verifying = !ready && percent >= 100;
+  const title = ready
+    ? 'Tout est prêt.'
+    : error
+      ? 'Téléchargement interrompu'
+      : verifying
+        ? 'Dernières vérifications…'
+        : 'Voxen s’améliore.';
+  const subtitle = ready
+    ? 'La nouvelle version vous attend.'
+    : error
+      ? 'Reprenez depuis les paramètres.'
+      : verifying
+        ? 'Le téléchargement est terminé.'
+        : 'Téléchargement en arrière-plan';
   const open = async () => {
-    if (disabled || lock.current) return;
-    lock.current = true;
+    if (pending) return;
     setPending(true);
-    setFailed(false);
     try {
-      if ((await onOpen?.()) === false) return;
-      if (updates.supported && ['idle', 'error'].includes(state)) {
-        await run?.('updates.check', {});
-      }
-    } catch {
-      setFailed(true);
+      await onOpen?.();
     } finally {
-      lock.current = false;
       setPending(false);
     }
   };
-
+  if (collapsed)
+    return (
+      <button
+        className={s.compact}
+        onClick={open}
+        disabled={pending}
+        data-sidebar-update
+        data-sidebar-update-open
+        title={`Mise à jour ${version} — ${title}`}
+        aria-label={`Mise à jour ${version} — ${title}`}
+      >
+        {error ? (
+          <TriangleAlert size={18} />
+        ) : (
+          <CircularProgress value={percent} complete={ready} compact />
+        )}
+      </button>
+    );
   return (
-    <button
-      type="button"
-      className={`${s.card} ${collapsed ? s.compact : ''} ${ready ? s.ready : ''}`}
+    <section
+      className={`${s.card} ${ready ? s.ready : ''}`}
       data-sidebar-update
       data-update-state={state}
-      disabled={disabled}
-      onClick={open}
-      aria-label={`${label}. ${caption}`}
-      aria-busy={disabled || undefined}
-      title={`${label} — ${caption}`}
+      aria-label="Mise à jour de Voxen"
     >
-      <span className={`${s.icon} ${checking || downloading || pending ? s.spinning : ''}`}>
-        <Icon size={17} strokeWidth={1.8} aria-hidden="true" />
-      </span>
-      {!collapsed && (
-        <>
-          <span className={s.copy}>
-            <span className={s.label}>{label}</span>
-            <span className={s.caption}>{caption}</span>
+      <div className={s.eyebrow}>
+        <Sparkles size={11} aria-hidden="true" />
+        <span>NOUVELLE VERSION</span>
+        <span className={s.version}>v{version.replace(/^v/, '')}</span>
+      </div>
+      <div className={s.summary}>
+        {error ? (
+          <span className={s.errorIcon}>
+            <TriangleAlert size={21} />
           </span>
-          <ArrowUpRight className={s.arrow} size={13} strokeWidth={1.8} aria-hidden="true" />
-        </>
-      )}
-    </button>
+        ) : (
+          <CircularProgress value={percent} complete={ready} compact />
+        )}
+        <div className={s.copy}>
+          <strong>{title}</strong>
+          <span>{subtitle}</span>
+        </div>
+      </div>
+      <button className={s.action} onClick={open} disabled={pending} data-sidebar-update-open>
+        {ready ? <RotateCcw size={13} aria-hidden="true" /> : null}
+        {ready ? 'Mettre à jour' : error ? 'Réessayer' : 'Voir le téléchargement'}
+        {!ready && <ArrowUpRight size={13} aria-hidden="true" />}
+      </button>
+    </section>
   );
 }

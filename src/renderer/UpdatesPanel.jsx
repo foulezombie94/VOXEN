@@ -12,6 +12,12 @@ import {
   TriangleAlert,
 } from 'lucide-react';
 import s from './UpdatesPanel.module.scss';
+import CircularProgress from './CircularProgress';
+
+function downloadSize(bytes) {
+  if (!Number.isFinite(bytes) || bytes < 0) return '—';
+  return `${(bytes / (1024 * 1024)).toLocaleString('fr-FR', { maximumFractionDigits: 1 })} Mo`;
+}
 
 function checkedDate(value) {
   if (!value) return 'Pas encore de vérification';
@@ -35,6 +41,18 @@ export default function UpdatesPanel({ updates = {}, run, dictationBusy = false 
   const installable = supported && ready && Boolean(updates.canInstall) && !busy && !dictationBusy;
   const version = String(updates.currentVersion || '').slice(0, 80);
   const available = String(updates.availableVersion || '').slice(0, 80);
+  const percent = typeof updates.downloadPercent === 'number' ? updates.downloadPercent : null;
+  const verifying = state === 'downloading' && percent >= 100;
+  const retryDate = updates.autoRetryAt ? new Date(updates.autoRetryAt) : null;
+  const retryLabel =
+    retryDate && Number.isFinite(retryDate.getTime())
+      ? retryDate.toLocaleString('fr-FR', {
+          day: 'numeric',
+          month: 'short',
+          hour: '2-digit',
+          minute: '2-digit',
+        })
+      : null;
 
   useEffect(() => {
     if (!ready || dictationBusy || !updates.canInstall) setConfirmInstall(false);
@@ -74,7 +92,9 @@ export default function UpdatesPanel({ updates = {}, run, dictationBusy = false 
     : state === 'checking'
       ? 'Recherche d’une nouvelle version…'
       : state === 'downloading'
-        ? 'Téléchargement en cours…'
+        ? verifying
+          ? 'Vérification de la mise à jour…'
+          : 'Votre nouvelle version arrive…'
         : ready
           ? 'Une mise à jour est prête'
           : state === 'error'
@@ -99,14 +119,18 @@ export default function UpdatesPanel({ updates = {}, run, dictationBusy = false 
       <h3 id="voxen-updates-heading">Mises à jour</h3>
       <div className={s.card}>
         <div className={s.summary}>
-          <span className={`${s.icon} ${ready ? s.readyIcon : ''}`}>
-            <StatusIcon size={20} strokeWidth={1.7} className={transferring ? s.spinner : ''} />
-          </span>
+          {state === 'downloading' || ready ? (
+            <CircularProgress value={percent} complete={ready} />
+          ) : (
+            <span className={`${s.icon} ${ready ? s.readyIcon : ''}`}>
+              <StatusIcon size={20} strokeWidth={1.7} className={transferring ? s.spinner : ''} />
+            </span>
+          )}
           <div className={s.summaryText} role="status" aria-live="polite">
             <h4>{title}</h4>
             <p>
               {version ? `Version installée : ${version}` : 'Version en cours de chargement'}
-              {supported && ready && available ? ` · Nouvelle version : ${available}` : ''}
+              {supported && available ? ` · Nouvelle version : ${available}` : ''}
             </p>
           </div>
         </div>
@@ -136,13 +160,32 @@ export default function UpdatesPanel({ updates = {}, run, dictationBusy = false 
           <>
             <p className={s.description}>
               {state === 'downloading'
-                ? 'Voxen prépare la nouvelle version. Vous pouvez continuer à utiliser l’application.'
+                ? verifying
+                  ? 'Tous les fichiers ont été reçus. Voxen vérifie et prépare l’installation avant de proposer le redémarrage.'
+                  : 'Les fichiers arrivent en arrière-plan. Continuez à dicter, nous vous préviendrons quand tout sera prêt.'
                 : ready
                   ? 'Le téléchargement est terminé. Choisissez le moment du redémarrage pour appliquer la mise à jour.'
                   : state === 'error'
                     ? 'La connexion ou le service de mise à jour est momentanément indisponible. Votre version actuelle reste utilisable.'
                     : 'Les nouvelles versions sont téléchargées en arrière-plan. Vous choisissez quand redémarrer pour les installer.'}
             </p>
+            {state === 'downloading' && (
+              <div className={s.transfer} data-update-transfer>
+                <span>
+                  {verifying
+                    ? 'Téléchargement terminé'
+                    : `${downloadSize(updates.transferredBytes)} / ${downloadSize(updates.totalBytes)}`}
+                </span>
+                {updates.bytesPerSecond > 0 && !verifying && (
+                  <span>{downloadSize(updates.bytesPerSecond)}/s</span>
+                )}
+                {verifying && (
+                  <span className={s.verifying}>
+                    <ShieldCheck size={13} /> Vérification des fichiers
+                  </span>
+                )}
+              </div>
+            )}
             <div className={s.actions}>
               <span className={s.checked}>{checkedDate(updates.lastChecked)}</span>
               {ready ? (
@@ -236,6 +279,12 @@ export default function UpdatesPanel({ updates = {}, run, dictationBusy = false 
           <ShieldCheck size={14} />
           <p>Une dictée en cours empêche le redémarrage pour installer une mise à jour.</p>
         </div>
+        {retryLabel && (
+          <p className={s.waiting} role="status">
+            Après plusieurs installations non abouties, la recherche automatique reprendra le{' '}
+            {retryLabel}. Vous pouvez toujours vérifier manuellement.
+          </p>
+        )}
         {feedback && (
           <p className={s.feedback} role="alert">
             {feedback}

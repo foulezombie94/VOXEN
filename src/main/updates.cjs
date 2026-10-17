@@ -1,6 +1,7 @@
 'use strict';
 const fs = require('node:fs');
 const path = require('node:path');
+const { newerVersion } = require('./update-download.cjs');
 const FEED = 'https://github.com/foulezombie94/VOXEN/releases/latest/download';
 const RELEASES = 'https://github.com/foulezombie94/VOXEN/releases/latest';
 const ACTIONS = new Set([
@@ -10,6 +11,54 @@ const ACTIONS = new Set([
   'updates.openReleases',
 ]);
 const MINUTE = 60_000;
+const DAY = 24 * 60 * MINUTE;
+const INSTALL_HISTORY = 'updates.installHistory';
+const stableVersion = (value) =>
+  typeof value === 'string' && /^v?\d{1,9}\.\d{1,9}\.\d{1,9}$/.test(value);
+const emptyInstallHistory = () => ({ failures: [], pending: null, autoRetryAt: null });
+
+function readInstallHistory(value, now) {
+  try {
+    if (typeof value !== 'string' || value.length > 4096) return emptyInstallHistory();
+    const data = JSON.parse(value);
+    const timestamp = (number) => Number.isSafeInteger(number) && number >= 0;
+    if (
+      !data ||
+      Array.isArray(data) ||
+      !Array.isArray(data.failures) ||
+      data.failures.length > 3 ||
+      !data.failures.every(timestamp) ||
+      (data.autoRetryAt !== null && !timestamp(data.autoRetryAt))
+    )
+      return emptyInstallHistory();
+    if (
+      data.pending !== null &&
+      (!data.pending ||
+        typeof data.pending !== 'object' ||
+        !stableVersion(data.pending.targetVersion) ||
+        !stableVersion(data.pending.fromVersion) ||
+        !newerVersion(data.pending.targetVersion, data.pending.fromVersion) ||
+        !timestamp(data.pending.attemptedAt))
+    )
+      return emptyInstallHistory();
+    return {
+      failures: data.failures
+        .map((time) => Math.min(time, now))
+        .filter((time) => time > now - DAY)
+        .slice(-3),
+      pending: data.pending
+        ? {
+            targetVersion: data.pending.targetVersion,
+            fromVersion: data.pending.fromVersion,
+            attemptedAt: Math.min(data.pending.attemptedAt, now),
+          }
+        : null,
+      autoRetryAt: data.autoRetryAt > now ? Math.min(data.autoRetryAt, now + DAY) : null,
+    };
+  } catch {
+    return emptyInstallHistory();
+  }
+}
 
 function installationMode({
   packaged,
@@ -61,14 +110,59 @@ class Updates {
     this.enabled = store.get('updates.enabled') !== 'false';
     this.state = mode === 'installed' ? 'idle' : 'unsupported';
     this.availableVersion = null;
+    this.resetProgress();
     // Never infer that the current version is up to date from a previous process.
     this.lastChecked = null;
     this.installing = false;
     this.closed = false;
     this.listeners = [];
+    this.installHistory = emptyInstallHistory();
     if (this.supported) {
+      const storedHistory = store.get(INSTALL_HISTORY);
+      this.installHistory = readInstallHistory(storedHistory, this.clock());
+      if (
+        typeof storedHistory === 'string' &&
+        storedHistory !== JSON.stringify(this.installHistory)
+      )
+        this.saveInstallHistory();
+      if (this.installHistory.pending) {
+        if (
+          stableVersion(version) &&
+          !newerVersion(this.installHistory.pending.targetVersion, version)
+        ) {
+          this.installHistory = emptyInstallHistory();
+          this.saveInstallHistory();
+        } else {
+          this.failedInstallAttempt(this.installHistory.pending.attemptedAt);
+        }
+      }
       this.listen('checking-for-update', () => {
+        if (this.state === 'downloading') return;
         this.state = 'checking';
+        this.changed();
+      });
+      this.listen('release-info', ({ version, totalBytes } = {}) => {
+        if (!newerVersion(version, this.version)) return;
+        this.availableVersion = version;
+        this.confirmedVersion = version;
+        this.totalBytes = Number.isSafeInteger(totalBytes) && totalBytes > 0 ? totalBytes : null;
+        this.changed();
+      });
+      this.listen('download-progress', (progress = {}) => {
+        const { transferredBytes, totalBytes, bytesPerSecond } = progress;
+        if (
+          !Number.isSafeInteger(totalBytes) ||
+          totalBytes <= 0 ||
+          !Number.isSafeInteger(transferredBytes) ||
+          transferredBytes < 0 ||
+          transferredBytes > totalBytes
+        )
+          return;
+        this.totalBytes = totalBytes;
+        this.transferredBytes = transferredBytes;
+        this.bytesPerSecond =
+          Number.isFinite(bytesPerSecond) && bytesPerSecond >= 0 ? bytesPerSecond : 0;
+        this.downloadPercent = (transferredBytes / totalBytes) * 100;
         this.changed();
       });
       this.listen('update-available', () => {
@@ -77,13 +171,16 @@ class Updates {
       });
       this.listen('update-not-available', () => {
         this.state = 'idle';
+        this.availableVersion = null;
+        this.confirmedVersion = null;
+        this.resetProgress();
         this.completed();
       });
       this.listen('update-downloaded', (_event, _notes, releaseName) => {
         this.state = 'ready';
-        this.availableVersion = /^v?\d+\.\d+\.\d+(?:[-+][A-Za-z0-9.-]+)?$/.test(releaseName || '')
-          ? releaseName
-          : null;
+        this.availableVersion =
+          this.confirmedVersion ||
+          (/^v?\d+\.\d+\.\d+(?:[-+][A-Za-z0-9.-]+)?$/.test(releaseName || '') ? releaseName : null);
         this.completed();
       });
       this.listen('error', () => this.failed());
@@ -108,8 +205,13 @@ class Updates {
       state: this.state,
       currentVersion: this.version,
       availableVersion: this.availableVersion,
+      downloadPercent: this.downloadPercent,
+      transferredBytes: this.transferredBytes,
+      totalBytes: this.totalBytes,
+      bytesPerSecond: this.bytesPerSecond,
       lastChecked: this.lastChecked,
       enabled: this.enabled,
+      autoRetryAt: this.retryTime() ? new Date(this.retryTime()).toISOString() : null,
       canInstall: this.state === 'ready' && !this.installing && !this.isBusy(),
       busy: this.installing,
       message: '',
@@ -117,6 +219,51 @@ class Updates {
   }
   changed() {
     if (!this.closed) this.onChange();
+  }
+  resetProgress() {
+    this.downloadPercent = null;
+    this.transferredBytes = 0;
+    this.totalBytes = null;
+    this.bytesPerSecond = 0;
+  }
+  retryTime() {
+    return this.installHistory.autoRetryAt > this.clock() ? this.installHistory.autoRetryAt : null;
+  }
+  saveInstallHistory() {
+    try {
+      this.store.set(INSTALL_HISTORY, JSON.stringify(this.installHistory));
+      return true;
+    } catch {
+      return false;
+    }
+  }
+  failedInstallAttempt(at = this.clock()) {
+    const now = this.clock();
+    this.installHistory.pending = null;
+    this.installHistory.failures = [...this.installHistory.failures, Math.min(at, now)]
+      .filter((time) => time > now - DAY)
+      .slice(-3);
+    if (this.installHistory.failures.length >= 3 && !this.retryTime())
+      this.installHistory.autoRetryAt = now + DAY;
+    this.saveInstallHistory();
+  }
+  beginInstallAttempt() {
+    if (
+      !stableVersion(this.availableVersion) ||
+      !stableVersion(this.version) ||
+      !newerVersion(this.availableVersion, this.version)
+    )
+      return false;
+    this.installHistory.pending = {
+      targetVersion: this.availableVersion,
+      fromVersion: this.version,
+      attemptedAt: this.clock(),
+    };
+    if (!this.saveInstallHistory()) {
+      this.installHistory.pending = null;
+      throw new Error('Impossible de préparer le redémarrage.');
+    }
+    return true;
   }
   delay() {
     return Math.round((30 + this.random() * 270) * MINUTE);
@@ -131,6 +278,7 @@ class Updates {
       this.installing
     )
       return;
+    delay = Math.max(delay, (this.retryTime() || 0) - this.clock());
     this.timer = this.schedule(() => {
       this.timer = null;
       void this.check(false);
@@ -147,6 +295,7 @@ class Updates {
   }
   failed() {
     if (this.closed) return;
+    if (this.installing && this.installHistory.pending) this.failedInstallAttempt();
     this.state = 'error';
     this.installing = false;
     this.arm(30 * MINUTE);
@@ -160,6 +309,10 @@ class Updates {
       ['checking', 'downloading', 'ready'].includes(this.state)
     )
       return { ok: false };
+    if (!manual && this.retryTime()) {
+      this.arm(MINUTE);
+      return { ok: false };
+    }
     if ((!manual && !this.enabled) || this.isBusy() || !this.isOnline()) {
       this.arm(MINUTE);
       if (manual)
@@ -167,6 +320,7 @@ class Updates {
       return { ok: false };
     }
     this.unschedule(this.timer);
+    this.resetProgress();
     this.state = 'checking';
     this.changed();
     try {
@@ -188,14 +342,17 @@ class Updates {
       throw new Error('Terminez l’opération en cours avant de redémarrer.');
     this.installing = true;
     this.changed();
+    let attempted = false;
     try {
       if (!(await this.beforeInstall()) || this.closed || this.isBusy())
         throw new Error(
           'Les notes doivent être enregistrées et la dictée terminée avant de redémarrer.',
         );
+      attempted = this.beginInstallAttempt();
       this.adapter.quitAndInstall();
       return { ok: true };
     } catch {
+      if (attempted && this.installHistory.pending) this.failedInstallAttempt();
       this.installing = false;
       this.changed();
       throw new Error(
@@ -227,6 +384,7 @@ class Updates {
     this.closed = true;
     this.unschedule(this.timer);
     for (const [event, handler] of this.listeners) this.adapter.removeListener(event, handler);
+    this.adapter.close?.();
   }
 }
 module.exports = { Updates, ACTIONS, FEED, RELEASES, installationMode };

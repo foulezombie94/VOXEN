@@ -1,7 +1,7 @@
 {
   "name": "voxen-desktop",
   "productName": "Voxen",
-  "version": "0.3.4",
+  "version": "0.3.5",
   "description": "Dictée vocale Windows en français avec transcription et reformulation.",
   "main": "src/main/main.cjs",
   "private": true,
@@ -10,7 +10,7 @@
     "build": "webpack --mode production && node scripts/finalize-build.cjs",
     "start": "electron .",
     "package": "npm run build && node scripts/package.cjs",
-    "test": "node --test tests/core.cjs tests/audio-routing.cjs tests/writing-features.cjs tests/cloud.cjs tests/updates.cjs",
+    "test": "node --test tests/core.cjs tests/audio-routing.cjs tests/writing-features.cjs tests/cloud.cjs tests/updates.cjs tests/dictation-controls.cjs",
     "test:ui": "node scripts/test-ui.cjs",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
