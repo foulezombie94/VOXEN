@@ -146,12 +146,12 @@ test('installed detection requires Windows, packaging, an exact app semver folde
   }
 });
 
-test('installed startup waits 60 seconds and subsequent randomized checks remain between 30 minutes and 5 hours', () => {
+test('installed startup checks silently after 3 seconds and periodic checks stay between 30 minutes and 5 hours', () => {
   const f = fixture();
   assert.deepEqual(f.calls.feed, [{ url: FEED }]);
   assert.equal(f.updates.status().lastChecked, null);
   f.updates.start();
-  assert.equal(f.delay(), MINUTE);
+  assert.equal(f.delay(), 3_000);
   assert.equal(f.calls.check, 0);
   f.fire();
   assert.equal(f.calls.check, 1);
@@ -163,6 +163,22 @@ test('installed startup waits 60 seconds and subsequent randomized checks remain
   f.updates.random = () => 0.999999;
   assert(f.updates.delay() <= 300 * MINUTE);
   assert(f.updates.delay() >= 30 * MINUTE);
+  f.close();
+});
+
+test('first install waits for the Squirrel lock without opening or installing anything', () => {
+  const f = fixture();
+  f.updates.start({ firstRun: true });
+  assert.equal(f.delay(), 15_000);
+  assert.equal(f.updates.status().state, 'idle');
+  assert.equal(f.updates.status().availableVersion, null);
+  assert.equal(f.calls.check, 0);
+  assert.equal(f.calls.install, 0);
+  f.fire();
+  assert.equal(f.calls.check, 1);
+  assert.equal(f.updates.status().state, 'checking');
+  assert.equal(f.updates.status().availableVersion, null);
+  assert.equal(f.calls.install, 0);
   f.close();
 });
 

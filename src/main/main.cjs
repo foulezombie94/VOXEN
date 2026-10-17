@@ -1418,7 +1418,7 @@ if (squirrelHandled) {
         app.exit(0);
         return;
       }
-      updater.start();
+      updater.start({ firstRun: args.includes('--squirrel-firstrun') });
       if (updater.mode === 'installed' && engine.settings.StartWithWindows) configureLogin(true);
       const icon = nativeImage.createFromPath(path.resolve(__dirname, '../../assets/icon.png'));
       tray = new Tray(icon);

@@ -285,9 +285,10 @@ class Updates {
     }, delay);
     this.timer?.unref?.();
   }
-  start() {
-    this.arm(MINUTE);
-  } // Includes the Squirrel first-run lock delay (>10s).
+  start({ firstRun = false } = {}) {
+    // Keep startup responsive; the first install briefly holds Squirrel's update lock.
+    this.arm(firstRun ? 15_000 : 3_000);
+  }
   completed() {
     this.lastChecked = new Date(this.clock()).toISOString();
     this.arm();
