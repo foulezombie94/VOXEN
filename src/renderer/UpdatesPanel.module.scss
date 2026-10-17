@@ -1,0 +1,259 @@
+.root {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-width: 0;
+  > h3 {
+    font-size: 15px;
+    font-weight: 550;
+    line-height: 20px;
+  }
+  button {
+    font: inherit;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 7px;
+    cursor: pointer;
+    flex-shrink: 0;
+  }
+  button:disabled {
+    opacity: 0.5;
+    cursor: default;
+  }
+  button:focus-visible {
+    outline: 2px solid #9d8667;
+    outline-offset: 3px;
+  }
+  h4,
+  p {
+    margin: 0;
+  }
+}
+.card {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  background: #f5f4f0;
+  border-radius: 12px;
+  padding: 20px;
+}
+.summary {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+}
+.icon {
+  width: 42px;
+  height: 42px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #eeebe3;
+  border: 1px solid #e7e0d4;
+  color: #938168;
+  border-radius: 11px;
+  flex-shrink: 0;
+}
+.readyIcon {
+  background: #edf0e5;
+  color: #7f8b65;
+  border-color: #dde4ce;
+}
+.summaryText {
+  min-width: 0;
+  h4 {
+    font-size: 14px;
+    font-weight: 550;
+    line-height: 1.4;
+    color: #3e372b;
+  }
+  p {
+    font-size: 11px;
+    color: #9d8f7a;
+    line-height: 1.6;
+    margin-top: 4px;
+    overflow-wrap: anywhere;
+  }
+}
+.description {
+  font-size: 12px;
+  line-height: 1.7;
+  color: #958670;
+}
+.actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.checked {
+  font-size: 10px;
+  line-height: 1.6;
+  color: #a19480;
+  margin-right: auto;
+}
+.primary {
+  font-size: 11px !important;
+  font-weight: 550 !important;
+  min-height: 35px;
+  padding: 8px 11px;
+  border: 1px solid #29261f;
+  background: #29261f;
+  color: #fff;
+  border-radius: 7px;
+  &:hover:not(:disabled) {
+    background: #494135;
+    border-color: #494135;
+  }
+}
+.secondary {
+  font-size: 11px !important;
+  font-weight: 550 !important;
+  min-height: 35px;
+  padding: 8px 11px;
+  border: 1px solid #dcd3c3;
+  background: #fff;
+  color: #7f6c50;
+  border-radius: 7px;
+  &:hover:not(:disabled) {
+    background: #fcf9f2;
+    border-color: #bcaa8f;
+  }
+}
+.automatic {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  border-top: 1px solid #e5dfd4;
+  padding-top: 16px;
+  > div {
+    min-width: 0;
+  }
+  strong {
+    font-weight: 550;
+    font-size: 12px;
+    color: #554a3a;
+  }
+  p {
+    font-size: 11px;
+    line-height: 1.6;
+    color: #9d8c74;
+    margin-top: 4px;
+  }
+}
+.switch {
+  position: relative;
+  display: inline-flex;
+  width: 40px;
+  height: 24px;
+  flex-shrink: 0;
+  border: 0;
+  border-radius: 20px;
+  background: #c7c0b2;
+  padding: 3px;
+  justify-content: flex-start !important;
+  transition: background 0.15s;
+  &[data-checked] {
+    background: #302d26;
+  }
+  &:disabled {
+    opacity: 0.5;
+  }
+}
+.thumb {
+  display: block;
+  width: 18px;
+  height: 18px;
+  flex-shrink: 0;
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 1px 2px #0002;
+  transition: transform 0.15s;
+  &[data-checked] {
+    transform: translateX(16px);
+  }
+}
+.note {
+  display: flex;
+  align-items: flex-start;
+  gap: 7px;
+  color: #ad9d84;
+  > svg {
+    flex-shrink: 0;
+    margin-top: 2px;
+  }
+  p {
+    font-size: 10px;
+    line-height: 1.7;
+  }
+}
+.waiting {
+  font-size: 11px;
+  line-height: 1.6;
+  color: #9f875e;
+  margin-top: -5px !important;
+}
+.confirmation {
+  border: 1px solid #ded1ba;
+  border-radius: 9px;
+  background: #fffaf0;
+  padding: 15px;
+  strong {
+    font-size: 12px;
+    font-weight: 550;
+    color: #79603e;
+  }
+  p {
+    font-size: 11px;
+    line-height: 1.7;
+    margin-top: 6px;
+    color: #a28a67;
+  }
+}
+.confirmActions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 14px;
+}
+.feedback {
+  font-size: 11px;
+  color: #a57f5c;
+  line-height: 1.7;
+}
+.spinner {
+  animation: updaterSpin 1s linear infinite;
+}
+@keyframes updaterSpin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+@media (max-width: 800px) {
+  .card {
+    padding: 16px;
+  }
+  .summaryText h4 {
+    font-size: 13px;
+  }
+  .actions {
+    gap: 9px;
+  }
+  .checked {
+    flex-basis: 100%;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .spinner {
+    animation: none;
+  }
+  .switch,
+  .thumb {
+    transition: none;
+  }
+}

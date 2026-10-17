@@ -40,6 +40,7 @@ import s from './App.module.scss';
 import { GuideBanner, GuideCard, TutorialDialog, useTutorials } from './Tutorials';
 import SettingsDialog from './SettingsDialog';
 import AccountMenu from './AccountMenu';
+import SidebarUpdate from './SidebarUpdate';
 import { DictionaryPage, SnippetsPage, AppStylesSection } from './LibraryPages';
 import { TransformsPage, HistoryPage, InsightsPage } from './WritingPages';
 import NotesPage from './NotesPage';
@@ -202,12 +203,20 @@ export default function App() {
     return result;
   };
   const navigate = async (id) => {
-    if (window.voxenFlushNotes && !(await window.voxenFlushNotes())) return;
+    if (window.voxenFlushNotes && !(await window.voxenFlushNotes())) return false;
     guides.close();
-    if (id === 'settings' || id === 'account') {
-      setSettingsTab(id === 'account' ? 'profile' : 'general');
+    if (id === 'settings' || id === 'account' || id === 'updates') {
+      setSettingsTab(id === 'account' ? 'profile' : id === 'updates' ? 'system' : 'general');
       setSettingsOpen(true);
-      return;
+      if (id === 'updates')
+        setTimeout(
+          () =>
+            document
+              .querySelector('[data-updates-panel]')
+              ?.scrollIntoView({ block: 'start', behavior: 'smooth' }),
+          120,
+        );
+      return true;
     }
     setSettingsOpen(false);
     setPage(id);
@@ -616,6 +625,12 @@ export default function App() {
           ))}
         </nav>
         {!collapsed && <GuideCard guides={guides} />}
+        <SidebarUpdate
+          updates={snapshot.updates}
+          collapsed={collapsed}
+          run={run}
+          onOpen={() => navigate('updates')}
+        />
         <div className={s.sidebarBottom}>
           <button
             title={status.paused ? 'Reprendre la dictée' : 'Mettre en pause'}
@@ -723,6 +738,7 @@ export default function App() {
         settings={settings}
         status={status}
         cloud={snapshot.cloud}
+        updates={snapshot.updates}
         versions={snapshot.versions}
         busy={busy}
         savePreference={savePreference}

@@ -11,6 +11,8 @@ const {
   clipboard,
   dialog,
   safeStorage,
+  autoUpdater,
+  net,
 } = require('electron');
 const path = require('node:path'),
   fs = require('node:fs');
@@ -20,11 +22,16 @@ const { Store } = require('./store.cjs'),
   providers = require('./providers.cjs');
 const { Workspace, ACTIONS: workspaceActions } = require('./workspace.cjs');
 const { Cloud, ACTIONS: cloudActions } = require('./cloud.cjs');
+const { Updates, ACTIONS: updateActions, installationMode } = require('./updates.cjs');
+const { handleSquirrel, APP_ID } = require('./squirrel.cjs');
+const { loadClientConfig } = require('./cloud-config.cjs');
 const args = process.argv;
 const diagnosticIndex = args.indexOf('--ui-self-test');
 const diagnostic = diagnosticIndex >= 0;
 const diagnosticDir = diagnostic ? path.resolve(args[diagnosticIndex + 1]) : null;
 app.setName('Voxen');
+if (process.platform === 'win32') app.setAppUserModelId(APP_ID);
+const squirrelHandled = !diagnostic && handleSquirrel({ app });
 if (diagnostic) {
   app.disableHardwareAcceleration();
   app.setPath('userData', path.join(diagnosticDir, 'profile'));
@@ -38,6 +45,7 @@ let hub,
   engine,
   workspace,
   cloud,
+  updater,
   localDestination,
   quitting = false,
   inserting = false,
@@ -94,8 +102,14 @@ function snapshot() {
   return {
     ...dataCache,
     cloud: cloud?.status(),
+    updates: updater?.status(),
     status: { ...engine.status(), keyboardWarning, transforming: workspace?.busy || false },
-    versions: { electron: process.versions.electron, react: '18.3.1', node: process.versions.node },
+    versions: {
+      app: app.getVersion(),
+      electron: process.versions.electron,
+      react: '18.3.1',
+      node: process.versions.node,
+    },
   };
 }
 function broadcast() {
@@ -140,7 +154,7 @@ function showOverlay() {
   }
 }
 function toggle() {
-  if (workspace?.busy) return;
+  if (workspace?.busy || updater?.installing) return;
   const now = Date.now();
   if (now - lastToggle < 450) return;
   lastToggle = now;
@@ -155,6 +169,7 @@ function registerShortcut() {
     !engine ||
     engine.paused ||
     inserting ||
+    updater?.installing ||
     workspace?.busy ||
     hub?.isFocused() ||
     notesWindow?.isFocused()
@@ -223,11 +238,21 @@ function captureSender(event) {
 async function action(event, { action, payload } = {}) {
   if (
     !ownSender(event) ||
-    (!allowedActions.has(action) && !workspaceActions.has(action) && !cloudActions.has(action))
+    (!allowedActions.has(action) &&
+      !workspaceActions.has(action) &&
+      !cloudActions.has(action) &&
+      !updateActions.has(action))
   )
     throw new Error('Action indisponible.');
   payload ??= {};
   try {
+    if (updateActions.has(action)) {
+      if (event.sender.id !== hub?.webContents.id)
+        throw new Error('Ouvrez les mises à jour dans les paramètres de Voxen.');
+      return await updater.handle(action, payload);
+    }
+    if (updater?.installing && action !== 'notes.save')
+      throw new Error('Voxen prépare son redémarrage.');
     if (cloudActions.has(action)) {
       if (event.sender.id !== hub?.webContents.id)
         throw new Error('Connexion : ouvrez les paramètres dans la fenêtre principale.');
@@ -336,12 +361,7 @@ async function action(event, { action, payload } = {}) {
         const next = store.saveSettings(payload);
         engine.settings = next;
         if (!diagnostic && previous.StartWithWindows !== next.StartWithWindows)
-          app.setLoginItemSettings({
-            openAtLogin: next.StartWithWindows,
-            path: process.execPath,
-            args: ['--tray'],
-            name: 'Voxen',
-          });
+          configureLogin(next.StartWithWindows);
         refreshData();
         registerShortcut();
         break;
@@ -417,6 +437,19 @@ async function action(event, { action, payload } = {}) {
 function protectWindow(win) {
   win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
   win.webContents.on('will-navigate', (event) => event.preventDefault());
+}
+function configureLogin(enabled) {
+  const installed = updater?.mode === 'installed';
+  app.setLoginItemSettings({
+    openAtLogin: enabled,
+    path: installed
+      ? path.resolve(path.dirname(process.execPath), '..', 'Update.exe')
+      : process.execPath,
+    args: installed
+      ? ['--processStart', 'Voxen.exe', '--process-start-args', '--tray']
+      : ['--tray'],
+    name: 'Voxen',
+  });
 }
 async function createWindows() {
   const preferences = {
@@ -637,6 +670,23 @@ async function uiSelfTest() {
   hub.setSize(1240, 850);
   await wait(100);
   await shot(hub, 'sidebar-dashboard');
+  result.sidebarUpdatePosition = await hub.webContents.executeJavaScript(
+    `(()=>{const card=document.querySelector('[aria-label="Découvrir Voxen"]'),button=document.querySelector('[data-sidebar-update]');if(!card||!button)return false;return card.nextElementSibling===button&&button.getBoundingClientRect().top>=card.getBoundingClientRect().bottom&&button.getBoundingClientRect().bottom<innerHeight})()`,
+  );
+  if (!result.sidebarUpdatePosition) throw new Error('Bouton de mise à jour absent sous le guide');
+  await hub.webContents.executeJavaScript(
+    "document.querySelector('[data-sidebar-update]').click()",
+  );
+  await wait(350);
+  result.sidebarUpdateOpensSystem = await hub.webContents.executeJavaScript(
+    "!!document.querySelector('[data-settings-panel=system]:not([hidden]) [data-updates-panel]')",
+  );
+  if (!result.sidebarUpdateOpensSystem)
+    throw new Error('Bouton de mise à jour ne rejoint pas le suivi');
+  await hub.webContents.executeJavaScript(
+    'document.querySelector(\'[aria-label="Fermer les paramètres"]\').click()',
+  );
+  await wait(100);
   result.sidebar = await hub.webContents.executeJavaScript(
     `(()=>{const e=document.querySelector('aside');const item=[...document.querySelectorAll('button')].find(e=>e.textContent.trim()==='Dictée');const s=getComputedStyle(e),i=getComputedStyle(item);return{width:e.getBoundingClientRect().width,background:s.backgroundColor,font:i.fontFamily,fontSize:i.fontSize,fontWeight:i.fontWeight,activeBackground:i.backgroundColor}})()`,
   );
@@ -795,6 +845,63 @@ async function uiSelfTest() {
       );
       if (!active) throw new Error('Onglet paramètres absent ' + tab);
       result.settingsTabs.push(tab);
+      if (tab === 'system') {
+        result.updatesPortableExplained = await hub.webContents.executeJavaScript(
+          "document.querySelector('[data-updates-panel]')?.textContent.includes('Version de développement')",
+        );
+        if (!result.updatesPortableExplained)
+          throw new Error('Mode développement présenté comme installable');
+        const originalAdapter = updater.adapter;
+        updater.mode = 'installed';
+        updater.state = 'ready';
+        updater.availableVersion = '0.3.1';
+        let attemptedRestart = false;
+        updater.adapter = {
+          quitAndInstall: () => {
+            attemptedRestart = true;
+          },
+        };
+        broadcast();
+        await wait(80);
+        await hub.webContents.executeJavaScript(
+          "document.querySelector('[data-updates-panel]').scrollIntoView({block:'end'}); [...document.querySelectorAll('[data-updates-panel] button')].find(e=>e.textContent.includes('Redémarrer et installer'))?.click()",
+        );
+        await wait(80);
+        result.updatesRequiresConfirmation = await hub.webContents.executeJavaScript(
+          '!!document.querySelector(\'[aria-label="Confirmer le redémarrage de Voxen"]\')',
+        );
+        if (!result.updatesRequiresConfirmation || attemptedRestart)
+          throw new Error('Confirmation de mise à jour absente');
+        await shot(hub, 'updates-confirmation');
+        engine.state = 'recording';
+        broadcast();
+        await wait(80);
+        result.updatesBlockedDuringDictation = await hub.webContents.executeJavaScript(
+          "![...document.querySelectorAll('[data-updates-panel] button')].some(e=>e.textContent.includes('Redémarrer et installer')&&!e.disabled)&&!document.querySelector('[aria-label=\"Confirmer le redémarrage de Voxen\"]')",
+        );
+        if (!result.updatesBlockedDuringDictation)
+          throw new Error('Redémarrage disponible pendant dictée');
+        engine.state = 'ready';
+        broadcast();
+        await wait(80);
+        await hub.webContents.executeJavaScript(
+          `(()=>{const previous=window.voxenFlushNotes;window.voxenFlushNotes=async()=>{try{return !!(await window.voxen.call('notes.save',{title:'Diagnostic sauvegarde avant mise à jour',body:'Brouillon de contrôle isolé.'})).note}finally{window.voxenFlushNotes=previous}}})()`,
+        );
+        await updater.install();
+        result.updatesFlushBeforeRestart =
+          attemptedRestart &&
+          store.notes().some((note) => note.Title === 'Diagnostic sauvegarde avant mise à jour') &&
+          hub.isEnabled();
+        if (!result.updatesFlushBeforeRestart)
+          throw new Error('Sauvegarde avant redémarrage indisponible');
+        updater.installing = false;
+        updater.mode = 'development';
+        updater.state = 'unsupported';
+        updater.availableVersion = null;
+        updater.adapter = originalAdapter;
+        broadcast();
+        await wait(80);
+      }
       await shot(hub, 'settings-' + tab);
       if (tab === 'profile') {
         result.cloudAccount = await hub.webContents.executeJavaScript(
@@ -1037,7 +1144,9 @@ async function uiSelfTest() {
     JSON.stringify(result, null, 2),
   );
 }
-if (!diagnostic && !app.requestSingleInstanceLock()) {
+if (squirrelHandled) {
+  // Squirrel's shortcut lifecycle completes without opening windows or user data.
+} else if (!diagnostic && !app.requestSingleInstanceLock()) {
   app.quit();
 } else {
   app.whenReady().then(async () => {
@@ -1062,11 +1171,10 @@ if (!diagnostic && !app.requestSingleInstanceLock()) {
       cloud = new Cloud(store, {
         config: diagnostic
           ? { url: 'https://example.supabase.co', publishableKey: 'diagnostic-public-placeholder' }
-          : fs.existsSync(path.resolve(__dirname, '../../assets/cloud-config.json'))
-            ? JSON.parse(
-                fs.readFileSync(path.resolve(__dirname, '../../assets/cloud-config.json'), 'utf8'),
-              )
-            : {},
+          : loadClientConfig(
+              path.dirname(store.path),
+              path.resolve(__dirname, '../../assets/cloud-config.json'),
+            ),
         safeStorage,
         diagnostic,
         onChange: () => {
@@ -1075,7 +1183,8 @@ if (!diagnostic && !app.requestSingleInstanceLock()) {
           broadcast();
         },
         beforeApply: async () => {
-          if (engine.busy() || engine.testMode || workspace.busy) return false;
+          if (engine.busy() || engine.testMode || workspace.busy || updater?.installing)
+            return false;
           for (const win of [hub, notesWindow])
             if (win && !win.isDestroyed()) {
               if (
@@ -1086,6 +1195,39 @@ if (!diagnostic && !app.requestSingleInstanceLock()) {
                 return false;
             }
           return !engine.busy() && !workspace.busy;
+        },
+      });
+      updater = new Updates({
+        adapter: autoUpdater,
+        store,
+        version: app.getVersion(),
+        mode: diagnostic ? 'development' : installationMode({ packaged: app.isPackaged }),
+        isOnline: () => net.isOnline(),
+        isBusy: () =>
+          engine.busy() || engine.testMode || workspace.busy || inserting || cloud.active,
+        onChange: () => {
+          registerShortcut();
+          if (dataCache) broadcast();
+        },
+        openReleases: async (url) => {
+          if (!diagnostic) await shell.openExternal(url);
+        },
+        beforeInstall: async () => {
+          const windows = [hub, notesWindow].filter((win) => win && !win.isDestroyed());
+          try {
+            for (const win of windows) win.setEnabled(false);
+            for (const win of windows) {
+              if (
+                !(await win.webContents.executeJavaScript(
+                  'Promise.resolve(window.voxenFlushNotes ? window.voxenFlushNotes() : true)',
+                ))
+              )
+                return false;
+            }
+            return true;
+          } finally {
+            for (const win of windows) if (!win.isDestroyed()) win.setEnabled(true);
+          }
         },
       });
       refreshData();
@@ -1099,6 +1241,8 @@ if (!diagnostic && !app.requestSingleInstanceLock()) {
         app.exit(0);
         return;
       }
+      updater.start();
+      if (updater.mode === 'installed' && engine.settings.StartWithWindows) configureLogin(true);
       const icon = nativeImage.createFromPath(path.resolve(__dirname, '../../assets/icon.png'));
       tray = new Tray(icon);
       tray.setToolTip('Voxen · Dictée');
@@ -1110,6 +1254,13 @@ if (!diagnostic && !app.requestSingleInstanceLock()) {
             click: () => {
               openHub();
               hub.webContents.send('voxen:navigate', 'settings');
+            },
+          },
+          {
+            label: 'Mises à jour',
+            click: () => {
+              openHub();
+              hub.webContents.send('voxen:navigate', 'updates');
             },
           },
           { label: 'Quitter', click: () => app.quit() },
@@ -1147,10 +1298,14 @@ if (!diagnostic && !app.requestSingleInstanceLock()) {
   app.on('before-quit', () => {
     quitting = true;
     cloud?.close();
+    updater?.close();
     workspace?.close();
     globalShortcut.unregisterAll();
     clearInterval(poll);
     void engine?.close();
+  });
+  autoUpdater.on('before-quit-for-update', () => {
+    quitting = true;
   });
   app.on('window-all-closed', () => {
     if (quitting) app.quit();

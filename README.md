@@ -12,6 +12,7 @@ Application Windows de dictée vocale en français. Une pression sur **Ctrl+V** 
 - Historique des dictées, favoris, statistiques et exports.
 - Compte facultatif Supabase, synchronisation choisie par catégorie et fonctionnement local hors connexion.
 - Interface crème, navigation latérale et carte Compte flottante.
+- Bouton de mise à jour, installateur Windows et nouvelles versions reçues depuis les releases officielles GitHub.
 
 ## Développement
 
@@ -51,6 +52,8 @@ Copy-Item assets/cloud-config.example.json assets/cloud-config.json
 
 Renseignez l’URL du projet et sa clé **publishable**. Ne placez jamais de clé `service_role`, de clé secrète Supabase ni de clé de transcription dans ce fichier. Le fichier de configuration réel n’est pas publié dans le dépôt.
 
+Pour une application installée qui reçoit des mises à jour, placez cette configuration publique dans `%LOCALAPPDATA%\Voxen\cloud-config.json`. Ce fichier utilisateur a priorité sur la configuration du paquet et reste présent quand le programme est remplacé. Seules les clés `sb_publishable_…` sont acceptées.
+
 ## Créer le paquet Windows
 
 ```powershell
@@ -58,6 +61,12 @@ npm run package
 ```
 
 Le paquet est généré dans `release/Voxen-win32-x64/`. Le script utilise les DLL redistribuables Visual C++ déjà présentes dans Windows, ou celles du dossier indiqué par `VOXEN_RUNTIME_DIR`. Si l’une manque, il s’arrête avec la liste des fichiers requis ; il n’installe rien automatiquement. Les DLL sont copiées à côté de l’exécutable pour le fonctionnement portable.
+
+## Mises à jour Windows
+
+Téléchargez l’installateur depuis les [versions officielles](https://github.com/foulezombie94/VOXEN/releases/latest). Une copie portable nécessite cette première installation pour activer Squirrel. Les recherches ont lieu après une minute puis toutes les trente minutes à cinq heures, quand Voxen est disponible et connecté. Le bouton sous « Prenez vos marques » recherche une version et ouvre son suivi dans **Paramètres → Système**. Quand elle est prête, confirmez le redémarrage ; une dictée, un traitement ou des notes non enregistrées le reportent.
+
+`npm run make:installer` produit l’installateur et le flux Squirrel. Le [guide de publication](docs/RELEASING.md) décrit la CI et les nouvelles versions. Cette première version de l’installateur est non signée Authenticode.
 
 ## Données et confidentialité
 

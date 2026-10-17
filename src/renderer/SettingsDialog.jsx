@@ -21,6 +21,7 @@ import {
 } from 'lucide-react';
 import s from './SettingsDialog.module.scss';
 import CloudAccountPanel from './CloudAccountPanel';
+import UpdatesPanel from './UpdatesPanel';
 
 const ITEMS = [
   { id: 'general', label: 'Général', icon: SlidersHorizontal },
@@ -92,6 +93,7 @@ export default function SettingsDialog({
   credentials,
   guides,
   cloud,
+  updates,
 }) {
   const [tab, setTab] = useState('general');
   const [detail, setDetail] = useState(null);
@@ -338,6 +340,11 @@ export default function SettingsDialog({
           onChange={(value) => update('RestoreClipboard', value)}
         />
       </Group>
+      <UpdatesPanel
+        updates={updates}
+        run={run}
+        dictationBusy={status?.state === 'recording' || status?.state === 'processing'}
+      />
     </>
   );
   const advanced = (
@@ -550,7 +557,9 @@ export default function SettingsDialog({
                 ))}
               </Tabs.List>
               <div className={s.version}>
-                <span>Voxen v0.2.0</span>
+                <span>
+                  {updates?.currentVersion ? `Voxen v${updates.currentVersion}` : 'Voxen'}
+                </span>
                 <button
                   aria-label="À propos de cette version"
                   title={`Electron ${versions?.electron || ''} · React ${versions?.react || ''}`}

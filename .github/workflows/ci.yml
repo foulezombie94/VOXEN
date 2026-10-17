@@ -25,3 +25,28 @@ jobs:
       - run: npm test
       - run: npm run build
       - run: npm run test:ui
+
+  release:
+    needs: validate
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && github.repository == 'foulezombie94/VOXEN'
+    runs-on: windows-latest
+    timeout-minutes: 30
+    permissions:
+      contents: write
+    concurrency:
+      group: voxen-stable-release
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+        with:
+          node-version-file: .node-version
+          cache: npm
+      - run: npm ci
+      - run: npm run make:installer
+      - name: Publish an immutable version
+        run: node scripts/publish-release.cjs
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
