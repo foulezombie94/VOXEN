@@ -603,6 +603,17 @@ async function openNotes() {
   notesWindow.focus();
 }
 async function uiSelfTest() {
+  const executeScript = hub.webContents.executeJavaScript.bind(hub.webContents);
+  hub.webContents.executeJavaScript = async (code, ...options) => {
+    try {
+      return await executeScript(code, ...options);
+    } catch (error) {
+      throw new Error('Diagnostic renderer [' + code.slice(0, 220) + '] : ' + error.message);
+    }
+  };
+  await hub.webContents.executeJavaScript(
+    `new Promise((resolve,reject)=>{const started=Date.now();const check=()=>{if(document.querySelector('aside nav button')&&document.querySelector('button[aria-label="Compte"]'))return resolve(true);if(Date.now()-started>10000)return reject(new Error('Interface initiale indisponible'));setTimeout(check,50)};check()})`,
+  );
   const result = {
     electron: process.versions.electron,
     node: process.versions.node,
