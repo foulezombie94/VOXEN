@@ -25,6 +25,7 @@ const { Cloud, ACTIONS: cloudActions } = require('./cloud.cjs');
 const { Updates, ACTIONS: updateActions, installationMode } = require('./updates.cjs');
 const { handleSquirrel, APP_ID } = require('./squirrel.cjs');
 const { loadClientConfig } = require('./cloud-config.cjs');
+const { shouldSuspendForFocusedWindow } = require('./hotkey-policy.cjs');
 const args = process.argv;
 const diagnosticIndex = args.indexOf('--ui-self-test');
 const diagnostic = diagnosticIndex >= 0;
@@ -158,12 +159,24 @@ function toggle() {
   const now = Date.now();
   if (now - lastToggle < 450) return;
   lastToggle = now;
-  void engine.toggle().catch(() => engine.set('error', 'Impossible de démarrer le microphone.'));
+  const targetWindow = hub?.isFocused() ? hub : notesWindow?.isFocused() ? notesWindow : null;
+  if (targetWindow && engine.state !== 'recording' && !engine.busy()) {
+    localDestination = {
+      sender: targetWindow.webContents,
+      context: { noteId: 0 },
+    };
+    if (targetWindow === hub) hub.webContents.send('voxen:navigate', 'scratchpad');
+  }
+  void engine
+    .toggle({ local: Boolean(targetWindow) })
+    .catch(() => engine.set('error', 'Impossible de démarrer le microphone.'));
 }
 function registerShortcut() {
   globalShortcut.unregisterAll();
   clearInterval(poll);
   poll = null;
+  const vk = engine?.settings.HotkeyVirtualKey;
+  const appWindowFocused = hub?.isFocused() || notesWindow?.isFocused();
   if (
     diagnostic ||
     !engine ||
@@ -171,11 +184,9 @@ function registerShortcut() {
     inserting ||
     updater?.installing ||
     workspace?.busy ||
-    hub?.isFocused() ||
-    notesWindow?.isFocused()
+    shouldSuspendForFocusedWindow(vk, appWindowFocused)
   )
     return;
-  const vk = engine.settings.HotkeyVirtualKey;
   keyboardWarning = '';
   if (vk === 165 || vk === 163) {
     previousDown = native.isShortcutDown(vk);

@@ -12,6 +12,7 @@ const {
   rewrite,
 } = require('../src/main/providers.cjs');
 const { VoiceDetector, Waveform } = require('../src/main/vad.cjs');
+const { shouldSuspendForFocusedWindow } = require('../src/main/hotkey-policy.cjs');
 
 const root = path.resolve(__dirname, '..');
 const dataDirectory = fs.mkdtempSync(path.join(require('node:os').tmpdir(), 'voxen-core-'));
@@ -49,6 +50,12 @@ function pcm16Wave(file) {
 }
 
 (async () => {
+  await check('F12 remains registered while a Voxen window is focused', () => {
+    assert.equal(shouldSuspendForFocusedWindow(123, true), false);
+    assert.equal(shouldSuspendForFocusedWindow(86, true), true);
+    assert.equal(shouldSuspendForFocusedWindow(165, true), true);
+    assert.equal(shouldSuspendForFocusedWindow(123, false), false);
+  });
   await check('Deepgram exact options, French and no filler words', () => {
     const url = new URL(deepgramUrl('fr', []));
     assert.equal(url.origin + url.pathname, 'https://api.deepgram.com/v1/listen');
