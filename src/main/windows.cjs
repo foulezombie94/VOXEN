@@ -481,7 +481,7 @@ async function insertText(text, target, restoreClipboard = true) {
 }
 
 function isShortcutDown(vk) {
-  return [165, 163].includes(vk) && !!(api.keyState(vk) & 0x8000);
+  return Number.isInteger(vk) && vk >= 1 && vk <= 254 && !!(api.keyState(vk) & 0x8000);
 }
 module.exports = {
   isShortcutDown,

@@ -74,6 +74,13 @@ function pcm16Wave(file) {
     );
     assert.equal(
       acceleratorFromKeyboardEvent({ key: 'Control', code: 'ControlRight', keyCode: 17 }),
+      null,
+    );
+    assert.equal(
+      acceleratorFromKeyboardEvent(
+        { key: 'Control', code: 'ControlRight', keyCode: 17 },
+        { modifierReleased: true },
+      ),
       'VK:163',
     );
     assert.equal(normalizeAccelerator('Shift+Control+e'), 'Control+Shift+E');
@@ -82,6 +89,45 @@ function pcm16Wave(file) {
     assert.equal(displayAccelerator('VK:123'), 'F12');
     assert.equal(displayAccelerator('Control+Shift+E'), 'Ctrl+Maj+E');
   });
+  await check(
+    'Windows reads F12 and arbitrary virtual keys instead of filtering out every new shortcut',
+    () => {
+      const reads = [];
+      let state = -32768;
+      const koffi = {
+        load: () => ({
+          func: (signature) =>
+            signature.includes('GetAsyncKeyState')
+              ? (key) => {
+                  reads.push(key);
+                  return state;
+                }
+              : () => 0,
+        }),
+        struct: () => ({}),
+        sizeof: () => 80,
+      };
+      const sandbox = {
+        module: { exports: {} },
+        process: { platform: 'win32', arch: 'x64', once: () => {} },
+        require: (name) =>
+          name === 'koffi' ? koffi : name === 'node:path' ? path : assert.fail(name),
+      };
+      require('node:vm').runInNewContext(
+        fs.readFileSync(path.join(root, 'src/main/windows.cjs'), 'utf8'),
+        sandbox,
+      );
+      const { isShortcutDown } = sandbox.module.exports;
+      for (const key of [123, 65, 32, 163, 165]) assert.equal(isShortcutDown(key), true);
+      assert.deepEqual(reads, [123, 65, 32, 163, 165]);
+      state = 1;
+      assert.equal(isShortcutDown(123), false, 'Only the currently-held high bit counts');
+      state = 0;
+      assert.equal(isShortcutDown(123), false);
+      for (const key of [0, 255, NaN, '123', 1.5]) assert.equal(isShortcutDown(key), false);
+      assert.equal(reads.length, 7, 'Invalid virtual keys never reach Win32');
+    },
+  );
   await check('Deepgram exact options, French and no filler words', () => {
     const url = new URL(deepgramUrl('fr', []));
     assert.equal(url.origin + url.pathname, 'https://api.deepgram.com/v1/listen');

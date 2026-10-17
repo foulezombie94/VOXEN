@@ -236,9 +236,12 @@ export default function SettingsDialog({
     if (detail !== 'shortcut' || !recordingShortcut) return;
     event.preventDefault();
     event.stopPropagation();
-    const accelerator = acceleratorFromKeyboardEvent(event);
+    if (event.repeat) return;
+    const accelerator = acceleratorFromKeyboardEvent(event, {
+      modifierReleased: event.type === 'keyup',
+    });
     if (!accelerator) {
-      setMessage('Cette touche ne peut pas servir de raccourci. Essaie une autre touche.');
+      setMessage('Continue ta combinaison, ou relâche la touche pour l’utiliser seule.');
       return;
     }
     setChoice(accelerator);
@@ -550,6 +553,11 @@ export default function SettingsDialog({
   const panels = { general, system, advanced, profile, connections, privacy };
   const openChange = (value) => {
     if (!value && saving) return;
+    if (!value) {
+      if (recordingShortcut) void run('shortcut.capture', { active: false });
+      setRecordingShortcut(false);
+      setDetail(null);
+    }
     onOpenChange(value);
   };
   return (
@@ -676,6 +684,7 @@ export default function SettingsDialog({
             className={s.detailPopup}
             data-settings-detail={detail}
             onKeyDownCapture={captureShortcut}
+            onKeyUpCapture={captureShortcut}
           >
             <div className={s.detailHeader}>
               <Dialog.Title>
@@ -898,7 +907,7 @@ export default function SettingsDialog({
                   <button
                     className={s.primaryButton}
                     data-settings-save-shortcut={detail === 'shortcut' ? '' : undefined}
-                    disabled={saving}
+                    disabled={saving || (detail === 'shortcut' && recordingShortcut)}
                     onClick={async () => {
                       if (
                         await update(

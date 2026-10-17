@@ -191,7 +191,7 @@ function registerShortcut() {
     inserting ||
     updater?.installing ||
     workspace?.busy ||
-    capturingShortcut ||
+    (capturingShortcut && hub?.isFocused()) ||
     shouldSuspendForFocusedWindow(accelerator, appWindowFocused)
   )
     return true;
@@ -380,6 +380,7 @@ async function action(event, { action, payload } = {}) {
         const previous = engine.settings;
         const next = store.saveSettings(payload);
         engine.settings = next;
+        capturingShortcut = false;
         if (!diagnostic && previous.StartWithWindows !== next.StartWithWindows)
           configureLogin(next.StartWithWindows);
         refreshData();
@@ -1031,7 +1032,11 @@ async function uiSelfTest() {
     );
     await wait(100);
     await hub.webContents.executeJavaScript(
-      "(()=>{const b=document.querySelector('[data-shortcut-record]');b?.dispatchEvent(new KeyboardEvent('keydown',{key:'e',code:'KeyE',keyCode:69,ctrlKey:true,bubbles:true,cancelable:true}))})()",
+      "(()=>{const b=document.querySelector('[data-shortcut-record]');b?.dispatchEvent(new KeyboardEvent('keydown',{key:'Control',code:'ControlLeft',keyCode:17,ctrlKey:true,bubbles:true,cancelable:true}))})()",
+    );
+    await wait(80);
+    await hub.webContents.executeJavaScript(
+      "(()=>{const b=document.querySelector('[data-shortcut-record]');if(!b?.textContent.includes('En attente'))throw new Error('Ctrl a terminé la capture trop tôt');b.dispatchEvent(new KeyboardEvent('keydown',{key:'e',code:'KeyE',keyCode:69,ctrlKey:true,bubbles:true,cancelable:true}))})()",
     );
     await wait(80);
     await hub.webContents.executeJavaScript(

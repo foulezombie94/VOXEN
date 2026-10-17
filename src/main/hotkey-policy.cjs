@@ -129,11 +129,12 @@ function normalizeAccelerator(value) {
   return [...MODIFIERS.filter((modifier) => modifiers.includes(modifier)), key].join('+');
 }
 
-function acceleratorFromKeyboardEvent(event) {
+function acceleratorFromKeyboardEvent(event, { modifierReleased = false } = {}) {
   const keyCode = Number(event.keyCode);
   const code = String(event.code || '');
   if (!Number.isInteger(keyCode) || keyCode <= 0 || keyCode > 254) return null;
-  if (MODIFIER_VKS[code]) return `VK:${MODIFIER_VKS[code]}`;
+  // Wait for keyup before accepting a modifier alone, so Ctrl+E is not captured as Ctrl.
+  if (MODIFIER_VKS[code]) return modifierReleased ? `VK:${MODIFIER_VKS[code]}` : null;
   const modifiers = [
     event.ctrlKey && 'Control',
     event.altKey && 'Alt',
