@@ -3,6 +3,7 @@ const { VoiceDetector, Waveform } = require('./vad.cjs');
 const providers = require('./providers.cjs');
 const writing = require('./writing.cjs');
 const native = require('./windows.cjs');
+const { displayAccelerator } = require('./hotkey-policy.cjs');
 class Engine extends EventEmitter {
   constructor(store, model, { diagnostic = false } = {}) {
     super();
@@ -31,13 +32,7 @@ class Engine extends EventEmitter {
     return this.deepgramConfigured;
   }
   get shortcut() {
-    return this.settings.HotkeyVirtualKey === 86
-      ? 'Ctrl+V'
-      : this.settings.HotkeyVirtualKey === 165
-        ? 'Alt droite'
-        : this.settings.HotkeyVirtualKey === 163
-          ? 'Ctrl droite'
-          : 'F12';
+    return displayAccelerator(this.settings.HotkeyAccelerator);
   }
   status() {
     return {

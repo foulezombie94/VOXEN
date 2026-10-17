@@ -18,10 +18,17 @@ import {
   CircleHelp,
   AudioLines,
   RefreshCw,
+  Keyboard,
 } from 'lucide-react';
 import s from './SettingsDialog.module.scss';
 import CloudAccountPanel from './CloudAccountPanel';
 import UpdatesPanel from './UpdatesPanel';
+import {
+  acceleratorFromKeyboardEvent,
+  displayAccelerator,
+  legacyAccelerator,
+  virtualKeyOf,
+} from '../main/hotkey-policy.cjs';
 
 const ITEMS = [
   { id: 'general', label: 'Général', icon: SlidersHorizontal },
@@ -36,8 +43,6 @@ const ITEMS = [
     icon: ShieldCheck,
   },
 ];
-const shortcutFor = (key) =>
-  ({ 86: 'Ctrl+V', 165: 'Alt droite', 163: 'Ctrl droite', 123: 'F12' })[key] || 'Ctrl+V';
 const languageFor = (code) =>
   ({ fr: 'Français', en: 'Anglais', de: 'Allemand', es: 'Espagnol', it: 'Italien' })[code] ||
   'Français';
@@ -98,6 +103,7 @@ export default function SettingsDialog({
   const [tab, setTab] = useState('general');
   const [detail, setDetail] = useState(null);
   const [choice, setChoice] = useState('');
+  const [recordingShortcut, setRecordingShortcut] = useState(false);
   const [message, setMessage] = useState('');
   const [firstName, setFirstName] = useState('');
   const [model, setModel] = useState('');
@@ -222,17 +228,47 @@ export default function SettingsDialog({
   };
   const edit = (type, value) => {
     setChoice(String(value));
+    setRecordingShortcut(false);
     setMessage('');
     setDetail(type);
+  };
+  const captureShortcut = (event) => {
+    if (detail !== 'shortcut' || !recordingShortcut) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const accelerator = acceleratorFromKeyboardEvent(event);
+    if (!accelerator) {
+      setMessage('Cette touche ne peut pas servir de raccourci. Essaie une autre touche.');
+      return;
+    }
+    setChoice(accelerator);
+    setRecordingShortcut(false);
+    void run('shortcut.capture', { active: false });
+    setMessage('Touche reconnue. Enregistre pour appliquer le raccourci.');
   };
   const general = (
     <>
       <Group>
-        <Row title="Raccourcis" description={shortcutFor(settings.HotkeyVirtualKey)}>
+        <Row
+          title="Raccourcis"
+          description={
+            status?.keyboardWarning ||
+            displayAccelerator(
+              settings.HotkeyAccelerator || legacyAccelerator(settings.HotkeyVirtualKey),
+            )
+          }
+        >
           <button
             className={s.changeButton}
             data-settings-edit="shortcut"
-            onClick={() => edit('shortcut', settings.HotkeyVirtualKey || 86)}
+            onClick={() =>
+              edit(
+                'shortcut',
+                settings.HotkeyAccelerator ||
+                  legacyAccelerator(settings.HotkeyVirtualKey) ||
+                  'Control+V',
+              )
+            }
           >
             Changer
           </button>
@@ -627,12 +663,20 @@ export default function SettingsDialog({
       <Dialog.Root
         open={Boolean(detail)}
         onOpenChange={(value) => {
-          if (!value && !saving) setDetail(null);
+          if (!value && !saving) {
+            if (recordingShortcut) void run('shortcut.capture', { active: false });
+            setRecordingShortcut(false);
+            setDetail(null);
+          }
         }}
       >
         <Dialog.Portal>
           <Dialog.Backdrop className={s.detailBackdrop} />
-          <Dialog.Popup className={s.detailPopup} data-settings-detail={detail}>
+          <Dialog.Popup
+            className={s.detailPopup}
+            data-settings-detail={detail}
+            onKeyDownCapture={captureShortcut}
+          >
             <div className={s.detailHeader}>
               <Dialog.Title>
                 {detail === 'shortcut'
@@ -767,43 +811,99 @@ export default function SettingsDialog({
               <>
                 <Dialog.Description>
                   {detail === 'shortcut'
-                    ? 'Une pression pour commencer, sans maintenir les touches.'
+                    ? 'Choisis ta touche ou ta combinaison. Une pression démarre la dictée, sans maintenir les touches.'
                     : 'La capture continue pendant la parole, puis se termine au bout du délai choisi.'}
                 </Dialog.Description>
-                <div className={s.choiceList}>
-                  {(detail === 'shortcut' ? [86, 165, 163, 123] : [2, 3, 5, 8]).map((value) => (
-                    <label className={choice === String(value) ? s.selectedChoice : ''} key={value}>
-                      <input
-                        type="radio"
-                        name="settings-choice"
-                        value={value}
-                        checked={choice === String(value)}
-                        disabled={saving}
-                        onChange={() => setChoice(String(value))}
-                      />
+                {detail === 'shortcut' ? (
+                  <>
+                    <button
+                      type="button"
+                      className={s.shortcutCapture}
+                      data-shortcut-record
+                      disabled={saving}
+                      onClick={async () => {
+                        setMessage('Préparation de l’enregistrement…');
+                        const ready = await run('shortcut.capture', { active: true });
+                        if (ready !== null) {
+                          setRecordingShortcut(true);
+                          setMessage('Appuie sur la touche ou la combinaison à utiliser.');
+                        }
+                      }}
+                    >
+                      <Keyboard size={18} />
                       <span>
-                        {detail === 'shortcut' ? shortcutFor(value) : `${value} secondes`}
+                        {recordingShortcut
+                          ? 'En attente de ta touche…'
+                          : `Raccourci choisi : ${displayAccelerator(choice)}`}
                       </span>
-                      {choice === String(value) && <Check size={16} />}
-                    </label>
-                  ))}
-                </div>
-                {detail === 'shortcut' && (
-                  <p className={s.detailNote}>
-                    Dans la fenêtre principale de Voxen, Ctrl+V conserve sa fonction habituelle de
-                    collage. Mettez la dictée en pause pour le libérer partout.
-                  </p>
+                      <kbd>{recordingShortcut ? '…' : 'Modifier'}</kbd>
+                    </button>
+                    <p className={s.detailNote}>
+                      Clique sur le bouton, puis tape directement la touche voulue. Pour une touche
+                      seule comme une lettre, Voxen peut démarrer chaque fois que tu la tapes dans
+                      une autre application ; une combinaison comme Ctrl+Maj+E évite cela.
+                    </p>
+                    {status?.keyboardWarning && (
+                      <p className={s.shortcutWarning} role="alert">
+                        {status.keyboardWarning}
+                      </p>
+                    )}
+                    {!recordingShortcut &&
+                      virtualKeyOf(choice) != null &&
+                      ((virtualKeyOf(choice) >= 48 && virtualKeyOf(choice) <= 90) ||
+                        (virtualKeyOf(choice) >= 96 && virtualKeyOf(choice) <= 111)) && (
+                        <p className={s.shortcutWarning}>
+                          Une touche seule peut lancer la dictée quand tu l’utilises dans une autre
+                          application. Ajoute Ctrl, Alt ou Maj pour éviter les déclenchements
+                          accidentels.
+                        </p>
+                      )}
+                    {message && (
+                      <p className={s.shortcutMessage} role="status">
+                        {message}
+                      </p>
+                    )}
+                  </>
+                ) : (
+                  <div className={s.choiceList}>
+                    {[2, 3, 5, 8].map((value) => (
+                      <label
+                        className={choice === String(value) ? s.selectedChoice : ''}
+                        key={value}
+                      >
+                        <input
+                          type="radio"
+                          name="settings-choice"
+                          value={value}
+                          checked={choice === String(value)}
+                          disabled={saving}
+                          onChange={() => setChoice(String(value))}
+                        />
+                        <span>{`${value} secondes`}</span>
+                        {choice === String(value) && <Check size={16} />}
+                      </label>
+                    ))}
+                  </div>
                 )}
                 <div className={s.detailActions}>
-                  <Dialog.Close className={s.secondaryButton}>Annuler</Dialog.Close>
+                  <Dialog.Close
+                    className={s.secondaryButton}
+                    onClick={() => {
+                      if (recordingShortcut) void run('shortcut.capture', { active: false });
+                      setRecordingShortcut(false);
+                    }}
+                  >
+                    Annuler
+                  </Dialog.Close>
                   <button
                     className={s.primaryButton}
+                    data-settings-save-shortcut={detail === 'shortcut' ? '' : undefined}
                     disabled={saving}
                     onClick={async () => {
                       if (
                         await update(
-                          detail === 'shortcut' ? 'HotkeyVirtualKey' : 'SilenceSeconds',
-                          Number(choice),
+                          detail === 'shortcut' ? 'HotkeyAccelerator' : 'SilenceSeconds',
+                          detail === 'shortcut' ? choice : Number(choice),
                         )
                       )
                         setDetail(null);

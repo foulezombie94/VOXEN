@@ -4,6 +4,7 @@ const fs = require('node:fs'),
 const defaults = {
   FirstName: '',
   HotkeyVirtualKey: 86,
+  HotkeyAccelerator: 'Control+V',
   Language: 'fr',
   StartSound: false,
   EndSound: false,
@@ -54,7 +55,16 @@ INSERT OR IGNORE INTO Migrations VALUES(1,strftime('%Y-%m-%dT%H:%M:%fZ','now'));
   }
   settings() {
     try {
-      return { ...defaults, ...JSON.parse(this.get('preferences') || '{}') };
+      const saved = JSON.parse(this.get('preferences') || '{}');
+      const accelerator = require('./hotkey-policy.cjs');
+      return {
+        ...defaults,
+        ...saved,
+        HotkeyAccelerator:
+          accelerator.normalizeAccelerator(saved.HotkeyAccelerator) ||
+          accelerator.legacyAccelerator(saved.HotkeyVirtualKey) ||
+          defaults.HotkeyAccelerator,
+      };
     } catch {
       return { ...defaults };
     }
@@ -74,9 +84,17 @@ INSERT OR IGNORE INTO Migrations VALUES(1,strftime('%Y-%m-%dT%H:%M:%fZ','now'));
     if (!next.RewriteModel) throw new Error('Renseignez le modèle de reformulation.');
     if (!['fr', 'en', 'de', 'es', 'it'].includes(next.Language))
       throw new Error('Langue non prise en charge.');
-    if (![86, 165, 163, 123].includes(Number(next.HotkeyVirtualKey)))
-      throw new Error('Raccourci non pris en charge.');
-    next.HotkeyVirtualKey = Number(next.HotkeyVirtualKey);
+    const hotkeys = require('./hotkey-policy.cjs');
+    if (Object.hasOwn(value, 'HotkeyAccelerator')) {
+      next.HotkeyAccelerator = hotkeys.normalizeAccelerator(value.HotkeyAccelerator);
+      if (!next.HotkeyAccelerator) throw new Error('Raccourci non pris en charge.');
+      next.HotkeyVirtualKey = hotkeys.virtualKeyOf(next.HotkeyAccelerator) ?? next.HotkeyVirtualKey;
+    } else if (Object.hasOwn(value, 'HotkeyVirtualKey')) {
+      const legacy = Number(value.HotkeyVirtualKey);
+      next.HotkeyAccelerator = hotkeys.legacyAccelerator(legacy);
+      if (!next.HotkeyAccelerator) throw new Error('Raccourci non pris en charge.');
+      next.HotkeyVirtualKey = legacy;
+    }
     this.set('preferences', JSON.stringify(next));
     return next;
   }

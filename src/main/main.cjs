@@ -25,7 +25,11 @@ const { Cloud, ACTIONS: cloudActions } = require('./cloud.cjs');
 const { Updates, ACTIONS: updateActions, installationMode } = require('./updates.cjs');
 const { handleSquirrel, APP_ID } = require('./squirrel.cjs');
 const { loadClientConfig } = require('./cloud-config.cjs');
-const { shouldSuspendForFocusedWindow } = require('./hotkey-policy.cjs');
+const {
+  legacyAccelerator,
+  shouldSuspendForFocusedWindow,
+  virtualKeyOf,
+} = require('./hotkey-policy.cjs');
 const args = process.argv;
 const diagnosticIndex = args.indexOf('--ui-self-test');
 const diagnostic = diagnosticIndex >= 0;
@@ -55,6 +59,7 @@ let hub,
   lastToggle = 0,
   anchor = null,
   keyboardWarning = '',
+  capturingShortcut = false,
   dataCache = null;
 const preload = path.join(__dirname, 'preload.cjs');
 const renderer = path.resolve(__dirname, '../../dist/renderer/index.html');
@@ -77,6 +82,7 @@ const allowedActions = new Set([
   'window.toggleMaximize',
   'hub.open',
   'settings.save',
+  'shortcut.capture',
   'credentials.save',
   'credentials.test',
   'history.copy',
@@ -175,7 +181,8 @@ function registerShortcut() {
   globalShortcut.unregisterAll();
   clearInterval(poll);
   poll = null;
-  const vk = engine?.settings.HotkeyVirtualKey;
+  const accelerator =
+    engine?.settings.HotkeyAccelerator || legacyAccelerator(engine?.settings.HotkeyVirtualKey);
   const appWindowFocused = hub?.isFocused() || notesWindow?.isFocused();
   if (
     diagnostic ||
@@ -184,11 +191,13 @@ function registerShortcut() {
     inserting ||
     updater?.installing ||
     workspace?.busy ||
-    shouldSuspendForFocusedWindow(vk, appWindowFocused)
+    capturingShortcut ||
+    shouldSuspendForFocusedWindow(accelerator, appWindowFocused)
   )
-    return;
+    return true;
   keyboardWarning = '';
-  if (vk === 165 || vk === 163) {
+  const vk = virtualKeyOf(accelerator);
+  if (vk != null) {
     previousDown = native.isShortcutDown(vk);
     poll = setInterval(() => {
       const down = native.isShortcutDown(vk);
@@ -196,10 +205,10 @@ function registerShortcut() {
       previousDown = down;
     }, 20);
   } else {
-    const accelerator = vk === 123 ? 'F12' : 'Control+V';
     if (!globalShortcut.register(accelerator, toggle))
       keyboardWarning = 'Le raccourci est utilisé par une autre application.';
   }
+  return !keyboardWarning;
 }
 function openHub() {
   hub.show();
@@ -374,6 +383,13 @@ async function action(event, { action, payload } = {}) {
         if (!diagnostic && previous.StartWithWindows !== next.StartWithWindows)
           configureLogin(next.StartWithWindows);
         refreshData();
+        registerShortcut();
+        break;
+      }
+      case 'shortcut.capture': {
+        if (event.sender.id !== hub?.webContents.id)
+          throw new Error('Ouvrez les paramètres de Voxen pour choisir ce raccourci.');
+        capturingShortcut = Boolean(payload.active);
         registerShortcut();
         break;
       }
@@ -993,28 +1009,54 @@ async function uiSelfTest() {
     await wait(100);
     await shot(hub, 'settings-shortcut');
     await hub.webContents.executeJavaScript(
-      'document.querySelector(\'[data-settings-detail=shortcut] input[value="123"]\')?.click()',
+      "(()=>{const b=document.querySelector('[data-shortcut-record]');b?.click();return !!b})()",
+    );
+    await wait(100);
+    await hub.webContents.executeJavaScript(
+      "(()=>{const b=document.querySelector('[data-shortcut-record]');b?.dispatchEvent(new KeyboardEvent('keydown',{key:'F12',code:'F12',keyCode:123,bubbles:true,cancelable:true}))})()",
     );
     await wait(80);
     await hub.webContents.executeJavaScript(
-      "(()=>{const d=document.querySelector('[data-settings-detail=shortcut]');[...d.querySelectorAll('button')].find(e=>e.textContent.trim()==='Enregistrer')?.click()})()",
+      "document.querySelector('[data-settings-save-shortcut]')?.click()",
     );
     await wait(150);
-    if (store.settings().HotkeyVirtualKey !== 123) throw new Error('Raccourci non enregistré');
+    if (store.settings().HotkeyAccelerator !== 'VK:123')
+      throw new Error('La touche F12 enregistrée depuis le clavier est incorrecte');
+    await hub.webContents.executeJavaScript(
+      "document.querySelector('[data-settings-edit=shortcut]')?.click()",
+    );
+    await wait(80);
+    await hub.webContents.executeJavaScript(
+      "(()=>{const b=document.querySelector('[data-shortcut-record]');b?.click();return !!b})()",
+    );
+    await wait(100);
+    await hub.webContents.executeJavaScript(
+      "(()=>{const b=document.querySelector('[data-shortcut-record]');b?.dispatchEvent(new KeyboardEvent('keydown',{key:'e',code:'KeyE',keyCode:69,ctrlKey:true,bubbles:true,cancelable:true}))})()",
+    );
+    await wait(80);
+    await hub.webContents.executeJavaScript(
+      "document.querySelector('[data-settings-save-shortcut]')?.click()",
+    );
+    await wait(150);
+    if (store.settings().HotkeyAccelerator !== 'Control+E')
+      throw new Error('La combinaison Ctrl+E enregistrée depuis le clavier est incorrecte');
     result.shortcutDialogSaves = true;
     await hub.webContents.executeJavaScript(
       "document.querySelector('[data-settings-edit=shortcut]')?.click()",
     );
     await wait(80);
     await hub.webContents.executeJavaScript(
-      'document.querySelector(\'[data-settings-detail=shortcut] input[value="86"]\')?.click()',
+      "(()=>{const b=document.querySelector('[data-shortcut-record]');b?.click();return !!b})()",
+    );
+    await wait(100);
+    await hub.webContents.executeJavaScript(
+      "(()=>{const b=document.querySelector('[data-shortcut-record]');b?.dispatchEvent(new KeyboardEvent('keydown',{key:'v',code:'KeyV',keyCode:86,ctrlKey:true,bubbles:true,cancelable:true}))})()",
     );
     await wait(80);
     await hub.webContents.executeJavaScript(
-      "(()=>{const d=document.querySelector('[data-settings-detail=shortcut]');[...d.querySelectorAll('button')].find(e=>e.textContent.trim()==='Enregistrer')?.click()})()",
+      "document.querySelector('[data-settings-save-shortcut]')?.click()",
     );
     await wait(150);
-    if (store.settings().HotkeyVirtualKey !== 86) throw new Error('Raccourci non restauré');
     await hub.webContents.executeJavaScript(
       "document.querySelector('[data-settings-edit=microphone]')?.click()",
     );

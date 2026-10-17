@@ -1,3 +1,3 @@
-# Voxen 0.3.2 — raccourci F12
+# Voxen 0.3.3 — raccourci personnalisable
 
-F12 déclenche désormais la dictée même lorsque Voxen ou son bloc-notes est au premier plan. Si la dictée démarre depuis Voxen, le texte final est inséré dans son bloc-notes.
+Le raccourci de dictée peut être choisi au clavier dans les paramètres, avec une touche seule ou une combinaison. Les raccourcis disponibles et leurs conflits sont signalés dans le réglage.

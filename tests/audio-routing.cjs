@@ -83,9 +83,11 @@ function harness() {
             ? providers
             : name === './writing.cjs'
               ? require('../src/main/writing.cjs')
-              : name === './windows.cjs'
-                ? native
-                : assert.fail(name),
+              : name === './hotkey-policy.cjs'
+                ? require('../src/main/hotkey-policy.cjs')
+                : name === './windows.cjs'
+                  ? native
+                  : assert.fail(name),
     Buffer,
     AbortController,
     AbortSignal,

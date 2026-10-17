@@ -12,7 +12,13 @@ const {
   rewrite,
 } = require('../src/main/providers.cjs');
 const { VoiceDetector, Waveform } = require('../src/main/vad.cjs');
-const { shouldSuspendForFocusedWindow } = require('../src/main/hotkey-policy.cjs');
+const {
+  acceleratorFromKeyboardEvent,
+  displayAccelerator,
+  normalizeAccelerator,
+  shouldSuspendForFocusedWindow,
+  virtualKeyOf,
+} = require('../src/main/hotkey-policy.cjs');
 
 const root = path.resolve(__dirname, '..');
 const dataDirectory = fs.mkdtempSync(path.join(require('node:os').tmpdir(), 'voxen-core-'));
@@ -51,10 +57,30 @@ function pcm16Wave(file) {
 
 (async () => {
   await check('F12 remains registered while a Voxen window is focused', () => {
-    assert.equal(shouldSuspendForFocusedWindow(123, true), false);
-    assert.equal(shouldSuspendForFocusedWindow(86, true), true);
-    assert.equal(shouldSuspendForFocusedWindow(165, true), true);
-    assert.equal(shouldSuspendForFocusedWindow(123, false), false);
+    assert.equal(shouldSuspendForFocusedWindow('VK:123', true), false);
+    assert.equal(shouldSuspendForFocusedWindow('Control+V', true), true);
+    assert.equal(shouldSuspendForFocusedWindow('Control+E', true), false);
+    assert.equal(shouldSuspendForFocusedWindow('VK:123', false), false);
+  });
+  await check('Keyboard shortcut capture supports arbitrary keys, chords and legacy labels', () => {
+    assert.equal(acceleratorFromKeyboardEvent({ key: 'F12', code: 'F12', keyCode: 123 }), 'VK:123');
+    assert.equal(
+      acceleratorFromKeyboardEvent({ key: 'e', code: 'KeyE', keyCode: 69, ctrlKey: true }),
+      'Control+E',
+    );
+    assert.equal(
+      acceleratorFromKeyboardEvent({ key: ' ', code: 'Space', keyCode: 32, altKey: true }),
+      'Alt+Space',
+    );
+    assert.equal(
+      acceleratorFromKeyboardEvent({ key: 'Control', code: 'ControlRight', keyCode: 17 }),
+      'VK:163',
+    );
+    assert.equal(normalizeAccelerator('Shift+Control+e'), 'Control+Shift+E');
+    assert.equal(normalizeAccelerator('Control+NotAKey'), null);
+    assert.equal(virtualKeyOf('VK:123'), 123);
+    assert.equal(displayAccelerator('VK:123'), 'F12');
+    assert.equal(displayAccelerator('Control+Shift+E'), 'Ctrl+Maj+E');
   });
   await check('Deepgram exact options, French and no filler words', () => {
     const url = new URL(deepgramUrl('fr', []));
@@ -148,6 +174,12 @@ function pcm16Wave(file) {
       assert.equal(settings.CleanupEnabled, false);
       assert.equal(Object.hasOwn(settings, 'UnknownField'), false);
       assert.throws(() => store.saveSettings({ Language: 'unsupported' }));
+      assert.equal(store.saveSettings({ HotkeyVirtualKey: 123 }).HotkeyAccelerator, 'VK:123');
+      assert.equal(
+        store.saveSettings({ HotkeyAccelerator: 'Control+Shift+E' }).HotkeyAccelerator,
+        'Control+Shift+E',
+      );
+      assert.throws(() => store.saveSettings({ HotkeyAccelerator: 'Control+NotAKey' }));
     } finally {
       store.close();
     }
@@ -156,6 +188,7 @@ function pcm16Wave(file) {
       assert.equal(reopened.settings().FirstName, 'Essai isolé');
       assert.equal(reopened.settings().CleanupEnabled, false);
       assert.equal(reopened.settings().SilenceSeconds, 2);
+      assert.equal(reopened.settings().HotkeyAccelerator, 'Control+Shift+E');
     } finally {
       reopened.close();
     }

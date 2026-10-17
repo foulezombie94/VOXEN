@@ -1,7 +1,7 @@
 {
   "name": "voxen-desktop",
   "productName": "Voxen",
-  "version": "0.3.2",
+  "version": "0.3.3",
   "description": "Dictée vocale Windows en français avec transcription et reformulation.",
   "main": "src/main/main.cjs",
   "private": true,

@@ -525,6 +525,58 @@
     background: #faf5ff;
   }
 }
+.shortcutCapture {
+  width: 100%;
+  min-height: 58px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 14px;
+  margin-top: 20px;
+  border: 1px solid #ded7ca;
+  border-radius: 9px;
+  color: #3a352e;
+  background: #faf8f3;
+  text-align: left;
+  cursor: pointer;
+  svg {
+    color: #86755d;
+    flex-shrink: 0;
+  }
+  span {
+    flex: 1;
+    min-width: 0;
+    font-size: 14px;
+  }
+  kbd {
+    padding: 4px 8px;
+    border: 1px solid #e1dbcf;
+    border-radius: 6px;
+    color: #857a68;
+    background: #fff;
+    font-size: 11px;
+  }
+  &:hover,
+  &:focus-visible {
+    border-color: #a28b68;
+    outline: 2px solid #c6b69b55;
+    outline-offset: 2px;
+  }
+  &:disabled {
+    opacity: 0.6;
+    cursor: default;
+  }
+}
+.shortcutWarning,
+.shortcutMessage {
+  margin-top: 10px;
+  font-size: 11px !important;
+  line-height: 1.6;
+  color: #997246 !important;
+}
+.shortcutMessage {
+  color: #778165 !important;
+}
 .detailNote {
   font-size: 11px !important;
   color: #9c9385 !important;
