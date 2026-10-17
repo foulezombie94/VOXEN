@@ -732,7 +732,7 @@ async function uiSelfTest() {
     'Paramètres',
   ]) {
     await hub.webContents.executeJavaScript(
-      `(()=>{const b=[...document.querySelectorAll('button')].find(e=>e.textContent.trim()===${JSON.stringify(label)});if(!b)throw new Error('Navigation absente');b.click()})()`,
+      `(()=>{const label=${JSON.stringify(label)};const b=[...document.querySelectorAll('button')].find(e=>e.title===label||e.textContent.trim()===label);if(!b)throw new Error('Navigation absente');b.click()})()`,
     );
     await wait(100);
     const heading = await hub.webContents.executeJavaScript(
@@ -930,7 +930,7 @@ async function uiSelfTest() {
       await wait(100);
     }
     await hub.webContents.executeJavaScript(
-      `(()=>{const b=[...document.querySelectorAll('button')].find(e=>e.textContent.trim()===${JSON.stringify({ dictation: 'Dictée', dictionary: 'Dictionnaire', replacements: 'Raccourcis', style: 'Style', rewrite: 'Transformations', scratchpad: 'Bloc-notes', insights: 'Statistiques', settings: 'Paramètres', history: 'Tout voir (0)' }[id])});b?.click()})()`,
+      `(()=>{const label=${JSON.stringify({ dictation: 'Dictée', dictionary: 'Dictionnaire', replacements: 'Raccourcis', style: 'Style', rewrite: 'Transformations', scratchpad: 'Bloc-notes', insights: 'Statistiques', settings: 'Paramètres', history: 'Tout voir (0)' }[id])};const b=[...document.querySelectorAll('button')].find(e=>e.title===label||e.textContent.trim()===label);b?.click()})()`,
     );
     await wait(80);
     await hub.webContents.executeJavaScript(
@@ -1047,6 +1047,10 @@ if (!diagnostic && !app.requestSingleInstanceLock()) {
       engine = new Engine(store, path.resolve(__dirname, '../../assets/silero/silero_vad.onnx'), {
         diagnostic,
       });
+      if (diagnostic) {
+        engine.deepgramConfigured = false;
+        engine.openrouterConfigured = false;
+      }
       workspace = new Workspace(store, engine, {
         diagnostic,
         getWindow: () => (notesWindow?.isFocused() ? notesWindow : hub),
