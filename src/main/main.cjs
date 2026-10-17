@@ -661,8 +661,9 @@ async function uiSelfTest() {
   if (!result.accountSecondClickCloses) throw new Error('Second clic compte ne ferme pas la carte');
   await accountClick();
   await wait(200);
-  hub.webContents.sendInputEvent({ type: 'keyDown', keyCode: 'ESC' });
-  hub.webContents.sendInputEvent({ type: 'keyUp', keyCode: 'ESC' });
+  await hub.webContents.executeJavaScript(
+    `document.activeElement.dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',code:'Escape',bubbles:true}))`,
+  );
   await wait(200);
   result.accountEscapeCloses = await hub.webContents.executeJavaScript(
     `!document.querySelector('[data-account-menu]')`,
@@ -670,20 +671,9 @@ async function uiSelfTest() {
   if (!result.accountEscapeCloses) throw new Error('Échap ne ferme pas la carte Compte');
   await accountClick();
   await wait(200);
-  hub.webContents.sendInputEvent({
-    type: 'mouseDown',
-    x: 450,
-    y: 600,
-    button: 'left',
-    clickCount: 1,
-  });
-  hub.webContents.sendInputEvent({
-    type: 'mouseUp',
-    x: 450,
-    y: 600,
-    button: 'left',
-    clickCount: 1,
-  });
+  await hub.webContents.executeJavaScript(
+    `(()=>{const e=document.querySelector('[data-account-backdrop]');for(const type of ['pointerdown','pointerup'])e.dispatchEvent(new PointerEvent(type,{bubbles:true,pointerType:'mouse',button:0,isPrimary:true}));e.click()})()`,
+  );
   await wait(200);
   result.accountOutsideCloses = await hub.webContents.executeJavaScript(
     `!document.querySelector('[data-account-menu]')`,

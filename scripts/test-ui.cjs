@@ -27,6 +27,17 @@ for (const name of fs.readdirSync(output)) {
 }
 const report = path.join(output, 'electron-ui-validation.json');
 if (result.error || result.status !== 0 || !fs.existsSync(report)) {
+  const failure = path.join(output, 'electron-ui-error.json');
+  const detail = fs.existsSync(failure) ? JSON.parse(fs.readFileSync(failure, 'utf8')) : {};
+  console.error(
+    JSON.stringify({
+      exitCode: result.status,
+      signal: result.signal,
+      runnerError: result.error?.code,
+      error: detail.error,
+      detail: detail.detail,
+    }),
+  );
   console.error('Diagnostic UI échoué. Voir artifacts/ui.');
   process.exit(1);
 }
